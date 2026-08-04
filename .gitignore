@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+web/dist/
+
+# Corpus — real policy PDFs are large and some are redistribution-restricted.
+# Track only manifests and the sourcing ledger.
+corpus/base/
+corpus/renewal/
+corpus/raw/
+!corpus/pairs/**/manifest.json
+
+# Runtime
+.env
+*.db
+raster_cache/
+evals/runs/*.json
+!evals/runs/.gitkeep
+
+# OS / editor
+.DS_Store
+.idea/
