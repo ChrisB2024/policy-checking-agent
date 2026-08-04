@@ -3,18 +3,27 @@
 _Last rewritten: 2026-08-03_
 
 ## What works
-Nothing runs yet. This session set up the repo, chose the stack, and broke `spec.md` into
-modules and chunks.
-
-- Git initialized (no commits yet).
-- `pyproject.toml` with the full dependency set. **Not yet installed** — `uv sync` hasn't run.
+- Toolchain installed and green: `uv sync` done, `ruff check` and `pyright` both clean,
+  all deps import.
+- Repo pushed to `github.com/ChrisB2024/policy-checking-agent` (main).
 - `claude.md` filled in: working mode, the "use the thing" gate, repo specifics, scope guards.
+- `README.md` — what documents the corpus needs and where to source them, since the corpus
+  itself is git-ignored.
 - `.spec/plan.md` — module map, ownership, and the C0–C4 chunk sequence.
-- `.spec/modules/*.md` — 13 module specs (contracts, corpus, pairgen, raster, extract,
-  normalize, compare, narrate, report, evals, persistence, api, web).
+- `.spec/modules/*.md` — 13 module specs.
 
 ## What's half-built
-Nothing. No `src/` yet.
+**C0.2 `contracts`** — scaffolded, awaiting implementation.
+
+| File | State |
+|---|---|
+| `enums.py` | Done. All closed vocabularies from spec §4.2/§4.3. |
+| `field.py` | Scaffold. `TODO(human)`: the `INCLUDED` sentinel, `Field[T]`'s fields, the citation validator, `not_found()`, `needs_review`, `is_cited`, `agreement()`. |
+| `snapshot.py` | `Identity` and `GeneralLiability` written as worked examples. `TODO(human)`: `Address`, `Property`, `PropertyLocation`, `FormRef`, `RiskTransfer`, `Exclusion`, `Premium`, and `field_at()` path resolution. |
+| `finding.py` | Scaffold. `TODO(human)`: the `FindingType` taxonomy (spec §5.2), `FindingSide`, `Finding` fields, section grouping. |
+| `manifest.py` | Scaffold. `TODO(human)`: the `from`/`to` aliasing (`from` is a keyword), `material_changes`. |
+
+Two `# noqa: F401` in `field.py` hold imports the TODOs will use — delete them on implement.
 
 ## What's blocked on Chris
 - **C1.1 corpus sourcing** is the critical path and it's manual. 15–20 real commercial package
@@ -52,10 +61,16 @@ Both are written up in `.spec/modules/raster.md` and `.spec/modules/extract.md`.
 should be proven on a real scanned PDF early in Phase 1 rather than discovered at an event.
 
 ## Next
-1. `uv sync` and confirm `uv run ruff check .` / `uv run pyright` run clean on an empty tree.
-2. **C0.2 — `contracts`.** Claude scaffolds `Field[T]`, `PolicySnapshot`, `Finding`, `Manifest`
-   with `TODO(human)` recipes; Chris implements. This is the spine — everything imports it.
-3. **C1.1 — corpus.** Start sourcing in parallel; it's the long pole.
+1. **Chris — fill in the `contracts` TODOs.** Suggested order: `field.py` first (everything
+   else depends on `Field[T]`), then `snapshot.py`, then `finding.py` and `manifest.py`.
+   Then Claude reviews and strips the TODO recipes.
+2. **Chris — C1.1 corpus, in parallel.** The long pole. Sourcing 15–20 real policies is slow,
+   manual work and nothing downstream can be validated without it. See `README.md`.
+3. Then C1.2 `raster` (Claude) — and prove the `source_text → bbox` path on a real scanned
+   PDF early, per the open problem above.
+
+Schema freeze: once the extractor exists (C1.4), a change to `contracts` means re-running the
+full eval suite and noting it here.
 
 Phase 4 (the LinkedIn conversations) does not wait for Phase 3, and per spec §14 it needs a
 date or it doesn't happen.
