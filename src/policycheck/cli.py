@@ -87,17 +87,22 @@ def search_cmd(
     ranked = rank(found)
     CANDIDATES.parent.mkdir(parents=True, exist_ok=True)
     CANDIDATES.write_text(
-        json.dumps([{"score": r.score, **r.candidate.__dict__} for r in ranked], indent=2)
+        json.dumps(
+            [{"score": r.score, "label": r.label, **r.candidate.__dict__} for r in ranked],
+            indent=2,
+        )
     )
 
     dropped = len(found) - len(ranked)
-    table = Table("Score", "Pages", "Case", "Description", box=None)
+    # Show the attachment's own label — the parent entry's description is the same string
+    # for every attachment in the filing and tells you nothing about which one this is.
+    table = Table("Score", "Pages", "Att", "Attachment label", box=None)
     for r in ranked[:25]:
         table.add_row(
             str(r.score),
             str(r.candidate.page_count or "?"),
-            (r.candidate.case_name or "")[:34],
-            (r.candidate.description or "")[:48],
+            str(r.candidate.attachment_number or "-"),
+            (r.label or "")[:74],
         )
     console.print(table)
     console.print(
@@ -123,6 +128,7 @@ def fetch_cmd(
     with CourtListenerClient() as client:
         for row in rows:
             score = row.pop("score")
+            row.pop("label", None)  # display-only; not a Candidate field
             candidate = Candidate(**row)
             dest = RAW_DIR / f"cl-{candidate.doc_id}.pdf"
             if dest.exists():

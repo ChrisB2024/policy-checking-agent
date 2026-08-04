@@ -52,6 +52,7 @@ class Candidate:
     is_available: bool
     filepath_local: str | None
     absolute_url: str | None
+    attachment_number: int | None = None
 
     @property
     def pdf_url(self) -> str | None:
@@ -60,11 +61,31 @@ class Candidate:
             return None
         return STORAGE_BASE + self.filepath_local.lstrip("/")
 
+    @staticmethod
+    def _attachment_from_path(filepath: str | None) -> int | None:
+        """Recover the attachment number from the stored filename.
+
+        RECAP paths encode docket entry and attachment, e.g.
+        `recap/gov.uscourts.dcd.119033.41.1.pdf` is entry 41, attachment 1. Used as a
+        fallback because `attachment_number` is not always populated in search results.
+        """
+        if not filepath:
+            return None
+        parts = filepath.rsplit("/", 1)[-1].removesuffix(".pdf").split(".")
+        if len(parts) >= 2 and parts[-1].isdigit() and parts[-2].isdigit():
+            return int(parts[-1])
+        return None
+
     @classmethod
     def from_result(cls, r: dict[str, Any]) -> "Candidate":
         # The search API mixes camelCase and snake_case across result types; read defensively
         # and prefer the longer description when both are present.
+        #
+        # NOTE: `caseName` and `court` come back empty for type=rd in practice, and
+        # `description` is the *parent docket entry's* — it lists every attachment, not just
+        # this document. triage.attachment_label() narrows it using the attachment number.
         description = r.get("description") or r.get("short_description") or ""
+        filepath = r.get("filepath_local")
         return cls(
             doc_id=int(r.get("id", 0)),
             docket_id=r.get("docket_id"),
@@ -73,8 +94,9 @@ class Candidate:
             description=description,
             page_count=r.get("page_count"),
             is_available=bool(r.get("is_available")),
-            filepath_local=r.get("filepath_local"),
+            filepath_local=filepath,
             absolute_url=r.get("absolute_url"),
+            attachment_number=r.get("attachment_number") or cls._attachment_from_path(filepath),
         )
 
 

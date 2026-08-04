@@ -46,6 +46,19 @@ UNPROMISING = re.compile(
 # two separate so nobody tunes the real one against screening results.
 FORM_NUMBER = re.compile(r"\b[A-Z]{2}\s?\d{2}\s?\d{2}\s?(?:\d{2}\s?\d{2})?\b")
 
+# Every PDF in RECAP carries the court's ECF stamp burned into each page, e.g.
+#   "Case 1:06-cv-00157-PLF Document 41-2 Filed 05/31/2007 Page 1 of 39"
+# That stamp is real text even when the page body is a scan. Left in, it makes every
+# scanned document look like it has a text layer — which matters, because spec §3.2 wants
+# at least two image-only pairs and §14 names scanned extraction as the main technical risk.
+ECF_STAMP = re.compile(
+    r"^.*\bCase\b.*\bDoc(?:ument)?\b.*\bFiled\b.*$", re.IGNORECASE | re.MULTILINE
+)
+
+# Chars of real body text (stamp removed) before a page counts as having a text layer.
+# A genuine policy page runs to hundreds; a stray watermark or page number does not.
+TEXT_LAYER_MIN_CHARS = 100
+
 DEC_MARKERS = ("DECLARATIONS", "DECLARATION PAGE", "COMMON POLICY DECLARATIONS")
 SCHEDULE_MARKERS = (
     "FORMS AND ENDORSEMENTS",
@@ -57,11 +70,38 @@ SCHEDULE_MARKERS = (
 LOB_MARKERS = ("COMMERCIAL GENERAL LIABILITY", "COMMERCIAL PROPERTY", "BUILDING AND PERSONAL")
 
 
+# Attachment lists inside a docket description, e.g.
+#   "(Attachments: # 1 Exhibit A - Notice, # (2) A copy of policy number ALTE003493 ...)"
+# Numbering appears both bare and parenthesised.
+ATTACHMENT_ITEM = re.compile(r"#\s*\(?(\d+)\)?\s*([^#]*)")
+
+
+def attachment_label(description: str, attachment_number: int | None) -> str:
+    """Pull one attachment's own label out of its parent docket entry description.
+
+    Search results for `type=rd` carry the *entry* description, which lists every
+    attachment. Scoring that whole string means a policy filed as exhibit 7 of an answer
+    gets judged on the word "ANSWER". Narrowing to the attachment's own text is what turns
+    "ANSWER to Counterclaim" into "Exhibit G - Commercial General Liability Declarations".
+
+    Falls back to the full description when there is no attachment list to index into.
+    """
+    if attachment_number is None or "#" not in description:
+        return description
+    for num, label in ATTACHMENT_ITEM.findall(description):
+        if int(num) == attachment_number:
+            return label.strip(" ,);")
+    return description
+
+
 @dataclass(frozen=True)
 class Ranked:
     candidate: Candidate
     score: int
     reasons: list[str]
+    label: str = ""
+    """The attachment's own description, when it could be isolated. This is what was
+    actually scored — show it rather than the parent entry's text."""
 
 
 def rank(candidates: list[Candidate]) -> list[Ranked]:
@@ -90,14 +130,16 @@ def rank(candidates: list[Candidate]) -> list[Ranked]:
             score -= 30
             reasons.append(f"{c.page_count}pp — too {'short' if c.page_count < 25 else 'long'}")
 
-        if PROMISING.search(c.description):
+        # Score this attachment's own label, not the parent entry's full description.
+        label = attachment_label(c.description, c.attachment_number)
+        if PROMISING.search(label):
             score += 25
-            reasons.append("description suggests an exhibit/policy")
-        if UNPROMISING.search(c.description):
+            reasons.append("label suggests an exhibit/policy")
+        if UNPROMISING.search(label):
             score -= 25
-            reasons.append("description suggests a pleading")
+            reasons.append("label suggests a pleading")
 
-        ranked.append(Ranked(candidate=c, score=score, reasons=reasons))
+        ranked.append(Ranked(candidate=c, score=score, reasons=reasons, label=label))
 
     return sorted(ranked, key=lambda r: r.score, reverse=True)
 
@@ -159,10 +201,11 @@ def screen(path: Path, sample_pages: int = 60) -> Screening:
         chunks: list[str] = []
         for i in range(limit):
             page = doc[i]
-            text = page.get_textpage().get_text_bounded() or ""
-            if len(text.strip()) > 40:  # a stray watermark is not a text layer
+            raw = page.get_textpage().get_text_bounded() or ""
+            body = ECF_STAMP.sub("", raw).strip()
+            if len(body) >= TEXT_LAYER_MIN_CHARS:
                 text_pages += 1
-            chunks.append(text.upper())
+            chunks.append(body.upper())
 
         body = "\n".join(chunks)
         return Screening(
