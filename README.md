@@ -111,8 +111,16 @@ itself runs without Postgres — it's only needed for the API and demo cache).
 
 ```bash
 uv sync
-export ANTHROPIC_API_KEY=...
+cp .env.example .env      # then fill in the keys
+uv run pc config          # shows what actually loaded; secrets masked
 ```
+
+All credentials and settings live in `.env`, loaded via `pydantic-settings`. `.env` is
+git-ignored; `.env.example` is tracked and documents every key. Real environment variables
+override `.env`, so you can export a value to shadow the file without editing it.
+
+You need an [Anthropic API key](https://console.anthropic.com/settings/keys) and a
+[CourtListener API token](https://www.courtlistener.com/profile/api/).
 
 Checks that must stay clean:
 

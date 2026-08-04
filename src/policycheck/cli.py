@@ -11,6 +11,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from policycheck.config import settings
 from policycheck.corpus.courtlistener import Candidate, CourtListenerClient
 from policycheck.corpus.ledger import CorpusEntry, CorpusLedger
 from policycheck.corpus.quota import QuotaLedger
@@ -21,6 +22,31 @@ corpus_app = typer.Typer(help="Source and screen the document corpus", no_args_i
 app.add_typer(corpus_app, name="corpus")
 
 console = Console()
+
+
+@app.command("config")
+def config_cmd() -> None:
+    """Show what settings actually loaded. Secrets are masked."""
+    s = settings()
+    table = Table("Setting", "Value", "Source", box=None)
+    for name, value in (
+        ("ANTHROPIC_API_KEY", s.anthropic_api_key),
+        ("COURTLISTENER_API_TOKEN", s.courtlistener_api_token),
+    ):
+        raw = value.get_secret_value() if value else ""
+        shown = f"[green]set[/green] (…{raw[-4:]})" if raw else "[red]missing[/red]"
+        table.add_row(name, shown, ".env or environment")
+    for name, value in (
+        ("DATABASE_URL", s.database_url),
+        ("EXTRACTION_MODEL", s.extraction_model),
+        ("EXTRACTION_PASSES", str(s.extraction_passes)),
+        ("DEMO_MODE", str(s.demo_mode)),
+        ("RASTER_CACHE_DIR", str(s.raster_cache_dir)),
+    ):
+        table.add_row(name, str(value), "")
+    console.print(table)
+    if not Path(".env").exists():
+        console.print("\n[yellow]No .env found. Run: cp .env.example .env[/yellow]")
 
 CANDIDATES = Path("corpus/.candidates.json")
 RAW_DIR = Path("corpus/raw")

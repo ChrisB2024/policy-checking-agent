@@ -15,13 +15,13 @@ Two things drive the design:
    daily budget on policies and spending it on 404s.
 """
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from policycheck.config import settings
 from policycheck.corpus.quota import QuotaLedger
 
 SEARCH_URL = "https://www.courtlistener.com/api/rest/v4/search/"
@@ -86,13 +86,8 @@ class CourtListenerClient:
     """
 
     def __init__(self, token: str | None = None, ledger: QuotaLedger | None = None) -> None:
-        self.token = token or os.getenv("COURTLISTENER_API_TOKEN")
-        if not self.token:
-            raise RuntimeError(
-                "COURTLISTENER_API_TOKEN is not set. Get one from "
-                "https://www.courtlistener.com/profile/api/ — unauthenticated requests are "
-                "throttled far below the 125/day authenticated budget."
-            )
+        # Falls through to .env via config.settings(); an explicit token still wins.
+        self.token = token or settings().require_courtlistener_token()
         self.ledger = ledger or QuotaLedger()
         # "Token", not "Bearer" — the docs call this out as the most common mistake.
         self._client = httpx.Client(
