@@ -27,3 +27,7 @@ evals/runs/*.json
 # OS / editor
 .DS_Store
 .idea/
+
+# Corpus sourcing scratch (the request budget and candidate list are local state)
+corpus/.quota.json
+corpus/.candidates.json
