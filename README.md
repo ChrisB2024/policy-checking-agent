@@ -28,6 +28,12 @@ You need to assemble these yourself before anything downstream can be validated.
 
 ### What counts as a usable document
 
+> **Read the whole document before judging it.** Coverage parts restate limits and forms
+> further in, and the front dec page is often a cover note that contradicts them. On a scanned
+> document `pc corpus screen` is blind, so page sampling is unsafe — page through all of it.
+> `.spec/fixtures.md` has a worked example of a policy where the real forms schedule and the
+> full limit breakout were both on page 9, behind a cover note showing neither.
+
 A **complete commercial package policy** — not a certificate, not a quote, not a dec page on
 its own. All three parts:
 
@@ -47,7 +53,7 @@ All public. No client dependency.
 | Source | What it yields | How to search |
 |---|---|---|
 | **CourtListener / RECAP** | Complete policies filed as litigation exhibits. Best source — coverage disputes attach the entire policy. | Full-text search for `"commercial general liability" declarations endorsement` |
-| **Public entity procurement** | Dec pages, certificates, occasionally full policies in board packets and RFP attachments | `site:.gov filetype:pdf "declarations" "commercial general liability"` |
+| **Public entity procurement** | Complete commercial package policies as bid attachments — packages by construction, so a cleaner path than litigation exhibits | `site:.gov filetype:pdf "common policy declarations" "schedule of forms"` |
 | **State risk pools / JPAs** | Full coverage documents, published as a matter of policy | Search individual pool sites directly |
 | **SERFF public filing access** (state DOI) | Form filings | Availability varies by state |
 | **Carrier specimen policies** | Clean, complete specimens | More common in professional liability, cyber, surplus lines |

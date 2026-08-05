@@ -61,6 +61,23 @@ Comparison is on the **normalized** value (`normalize` runs before merge), so `$
 - Demo mode retains nothing: documents are processed in memory and discarded (spec invariant 5).
   Nothing here writes a PDF to disk outside the run-scoped raster cache.
 
+## Layouts the extractor must survive
+Real documents, not hypotheticals — see `.spec/fixtures.md` for the source case.
+
+- **Forms schedules at more than one document level.** A cover note's "Special Conditions"
+  box and a coverage part's "Item 3. Forms and Endorsements" can both exist and disagree, each
+  listing forms the other omits. Find every schedule and union them; an extractor that finds
+  one and stops is wrong in both directions.
+- **Limits restated further in.** A front dec page may show one blended limit where the
+  supplemental declarations break out all six. Reading only the front page yields five
+  spurious `not_found`s, each of which becomes a phantom finding at renewal.
+- **Documents that contradict themselves.** The same field can appear twice with different
+  values, both verbatim and both citable. The dual-pass merge catches *extraction*
+  disagreement; it does not catch *document* disagreement. A field with two conflicting
+  in-document sources is `low` confidence with both citations retained — never a silent pick.
+- **Values that do not reconcile.** Rate × exposure need not equal premium (minimum premium
+  governs, flagged `MP`). Premium is extracted, never derived or validated arithmetically.
+
 ## Failure modes
 - **Prompting the model to be confident.** The whole `needs_review` design depends on it
   reporting doubt. Any prompt language that discourages `not_found` breaks invariant 3.

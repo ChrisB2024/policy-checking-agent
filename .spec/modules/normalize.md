@@ -31,6 +31,17 @@ ISO shape at all.
 The last case matters: a form the regex cannot parse must fall through to
 `form_added_unclassified` (review_required), not be dropped and not be guessed at.
 
+Real examples from `.spec/fixtures.md` (`cl-2742056`), in one document: `CG0001 (1-96)`,
+`CG2136 (11/85)`, `CG 2160 (4-98)`, `CG2175 (12-02)`, `IL0017 (11-85)` — ISO, parseable —
+alongside `TAPCO1998`, `CL150-EX`, `ALEA-GL-01 (01/04)`, `EZ-EXCL-01 (06/03)`,
+`UTS-128g (10-94)`, `GU 276a (11-85)` — proprietary, MGA, and Lloyd's, which are not.
+Note the edition formats vary within the same schedule line: `(1-96)`, `(11/85)`, `(4-98)`,
+`(01/04)`. Same document, four separators.
+
+That document also carries a *Commercial Property* Total Mold Exclusion on a policy with no
+property coverage part — a form that is genuinely unclassifiable against the coverage it is
+attached to, and the reason the fall-through has to exist.
+
 ## Invariants
 - Normalization is **total and pure**: same input, same output, no I/O, no model calls.
 - Every function returns `None` (or a typed failure) rather than a best guess. An unparseable
