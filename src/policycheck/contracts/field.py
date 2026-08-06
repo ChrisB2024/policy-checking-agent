@@ -21,7 +21,7 @@ NOTE: `pydantic.Field` and our `Field` collide. In this file pydantic's is impor
 """
 
 import functools
-from typing import Any, ClassVar, Self, final
+from typing import Any, ClassVar, Literal, Self, final
 
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler, model_validator
 from pydantic import Field as PydanticField
@@ -122,19 +122,26 @@ class Field[T](BaseModel):
     """A single extracted value plus the evidence for it.
 
     Invariants this model must enforce (see the validator below):
-      - `value is not None` implies `page` and `source_text` are both present.
+      - An **assertive** field implies `page` and `source_text` are both present.
         No uncited claims (spec invariant 2).
       - `confidence == NOT_FOUND` implies `value is None`.
       - `bbox` is nullable and stays that way. Scanned pages resolve no box, and a *wrong*
         box is far worse than none — it breaks spec invariant 7.
 
-    The first invariant is gated on `value`, not on `confidence`, and that distinction is
-    load-bearing. Spec invariant 2 is about fields that assert something: "every extracted
-    field carries a page citation and a verbatim source snippet, or it does not appear in
-    output". A field with no value has nothing to point at, so demanding it point somewhere
-    is incoherent — and it is exactly the shape the extractor produces when it cannot locate
-    a value: no value, no citation, and `confidence` left at its `LOW` default because the
-    model is told not to set it. Gating on `confidence` would reject that.
+    The citation invariant is gated on what the field *claims*, not on `confidence`, and that
+    distinction is load-bearing. Spec invariant 2 is about fields that assert something:
+    "every extracted field carries a page citation and a verbatim source snippet, or it does
+    not appear in output". Two shapes assert something:
+
+      - a value is present; or
+      - `basis is EXCLUDED` — "the document affirmatively shows this coverage removed" is a
+        claim about the document, capable of producing a substantive finding, and it needs a
+        page to point at just as much as a limit does.
+
+    `basis is ABSENT` claims nothing, so demanding it point somewhere is incoherent — and it
+    is exactly the shape the extractor produces when it cannot locate a value: no value, no
+    citation, and `confidence` left at its `LOW` default because the model is told not to set
+    it. Gating on `confidence` would reject that shape.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -214,14 +221,37 @@ class Field[T](BaseModel):
     )
 
 
+    def _claim(self) -> str:
+        """How this field's assertion reads in an error message."""
+        if self.value is not None:
+            return f"value={self.value!r} raw={self.raw!r}"
+        return "coverage asserted excluded"
+
     def _locator(self) -> str:
-        """Enough identity to find this field in the source PDF from a stack trace."""
+        """Enough identity to find this field in the source PDF from a stack trace.
+
+        Composed from `_claim` so the excluded case does not report itself as `value=None`.
+        """
         where = f"page {self.page}" if self.page is not None else "no page"
-        return f"value={self.value!r} raw={self.raw!r} ({where})"
+        return f"{self._claim()} ({where})"
+
+    @property
+    def _asserts_something(self) -> bool:
+        """True when this field makes a claim about the document that a human must be able
+        to check — and therefore must carry a citation.
+
+        Named because it is the subject of the citation invariant, and because "has a value"
+        is the wrong test for it. See the class docstring.
+        """
+        # EXCLUDED is here because "the document affirmatively shows this coverage removed"
+        # is a finding `compare` can publish, and every Finding requires both sides' page +
+        # source_text (.spec/modules/compare.md). ABSENT is exempt: it claims nothing, and it
+        # is the shape the extractor returns when it finds nothing.
+        return self.value is not None or self.basis is ValueBasis.EXCLUDED
 
     @model_validator(mode="after")
     def _citation_required(self) -> Self:
-        """Reject any field that claims a value without evidence for it.
+        """Reject any field that makes a claim without evidence for it.
 
         The NOT_FOUND check runs first deliberately: a field with `confidence=not_found`
         carrying an uncited value trips both rules, and the specific message is the useful
@@ -234,7 +264,7 @@ class Field[T](BaseModel):
                 f"document; a value here means the merge step wrote one back."
             )
 
-        if self.value is not None:
+        if self._asserts_something:
             missing = [
                 name
                 for name, present in (
@@ -245,9 +275,10 @@ class Field[T](BaseModel):
             ]
             if missing:
                 raise ValueError(
-                    f"uncited value: {self._locator()} is missing "
-                    f"{' and '.join(missing)}. Every value must cite the page it was "
-                    f"read from and the verbatim line containing it (spec invariant 2)."
+                    f"uncited claim: {self._locator()} is missing "
+                    f"{' and '.join(missing)}. Any field that asserts something about "
+                    f"the document must cite the page it was read from and the verbatim "
+                    f"line containing it (spec invariant 2)"
                 )
 
         return self
@@ -286,29 +317,65 @@ class Field[T](BaseModel):
         Both LOW and NOT_FOUND qualify. `compare` uses this to decide whether a field is
         eligible to produce a substantive finding at all (spec §5.2, `low_confidence_field`).
         """
-        # TODO(human)
-        raise NotImplementedError
+        # Stated negatively on purpose: only HIGH is trusted. If a member is ever added to
+        # `Confidence`, this routes it to review rather than silently treating it as a value
+        # (spec invariant 3). Do not "tidy" this into `in (LOW, NOT_FOUND)`.
+        return self.confidence is not Confidence.HIGH
 
     @property
     def is_cited(self) -> bool:
-        """True when a human could follow this field to its source in under 90 seconds."""
-        # TODO(human): page present is the bar. bbox is a nice-to-have; its absence
-        # degrades the UI jump, not the citation.
-        raise NotImplementedError
+        """True when a human could follow this field to its source in under 90 seconds.
+
+        `page` is the bar; `bbox` is a nice-to-have. A missing box degrades the jump in the
+        viewer to a page-level highlight, which is the guaranteed path on scanned documents
+        anyway (spec §3.2) — it does not cost the citation.
+        """
+        return self.page is not None
+
+type ClaimKey = tuple[Literal["value", "excluded", "absent"], Any]
 
 
-def agreement(a: "Field[Any]", b: "Field[Any]") -> Confidence:
+def _claim_key(f: "Field[Any]") -> ClaimKey:
+    """What this field asserts about the document, as a comparable key.
+
+    The discriminant tag is load-bearing: two fields with `value=None` are only agreeing
+    if they are silent for the same reason.
+
+    `basis=None` folds into "absent" deliberately. A pass that finds nothing and does not
+    say why is making the same claim as one that says `absent`; splitting them would push
+    every unlabeled miss to `low` and flood `needs_review`.
+
+    Named for what it is compared with — distinct from `Field._claim`, which renders the
+    same assertion for a human reading an error message.
+    """
+    if f.value is not None:
+        return ("value", f.value)
+    if f.basis is ValueBasis.EXCLUDED:
+        return ("excluded", None)
+    return ("absent", None)
+
+
+def agreement[T](a: "Field[T]", b: "Field[T]") -> Confidence:
     """Confidence for a field extracted independently by two passes (spec §10).
 
     Comparison is on the NORMALIZED value, not the raw string — normalize runs before this,
     so "$1,000,000" and "1,000,000" agree. Comparing raw strings would flood the `low`
     bucket with formatting noise and make `needs_review` useless.
 
-        both agree on a value        -> HIGH
-        disagree                     -> LOW
+        both agree on a value          -> HIGH
+        disagree                       -> LOW
         one has a value, one not_found -> LOW
-        both not_found               -> NOT_FOUND
+        both read "excluded"           -> HIGH
+        both not_found                 -> NOT_FOUND
     """
-    # TODO(human): implement. This is the rule that makes the needs_review bucket honest —
-    # it is the entire justification for paying 2x on extraction.
-    raise NotImplementedError
+    # The `excluded -> HIGH` row earns its keep: both passes reading "Excluded" off the page
+    # is a confident result, and routing it to `low` would park every exclusion in the corpus
+    # in `needs_review`. HIGH makes the field trusted by `compare`, which is why the citation
+    # invariant has to cover it too — see `_asserts_something`.
+    claim_a, claim_b = _claim_key(a), _claim_key(b)
+    if claim_a != claim_b:
+        return Confidence.LOW
+    if claim_a[0] == "absent":
+        return Confidence.NOT_FOUND
+    return Confidence.HIGH
+

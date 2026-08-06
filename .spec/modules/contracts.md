@@ -26,10 +26,16 @@ passes raw dicts or bare values. This module imports nothing from the rest of th
   sentinel the type checker can see, not a magic number.
 - `bbox` is `list[float] | None` — nullable, because scanned pages can't resolve one.
   `page` and `source_text` are **not** nullable when `value is not None`.
-- The citation invariant is gated on `value`, not on `confidence`. Spec invariant 2 is about
-  fields that assert something; a field with no value has nothing to point at. It is also the
-  shape the extractor returns when it cannot find a value — no value, no citation, and
-  `confidence` left at its `LOW` default because the model is told not to set it.
+- The citation invariant is gated on what the field **asserts**, not on `confidence`. Two
+  shapes assert something and must cite: a present `value`, and `basis = excluded` — "the
+  document affirmatively shows this coverage removed" is a claim `compare` can turn into a
+  substantive finding, so it needs a page to point at. `basis = absent` claims nothing and is
+  exempt; it is also the shape the extractor returns when it cannot find a value — no value,
+  no citation, and `confidence` left at its `LOW` default because the model is told not to
+  set it.
+- `agreement()` compares the pair `(value, basis)`. Two fields that both have `value = None`
+  are not necessarily agreeing: one `absent` and one `excluded` is a real disagreement about
+  what the document says, and it routes to `low`.
 - `confidence` and `extraction_passes_agreed` default to `LOW` / `False` rather than being
   required, so the extraction schema does not demand the two fields its own descriptions tell
   the model not to set. An un-merged field has not earned confidence.
