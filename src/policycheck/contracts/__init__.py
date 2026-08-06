@@ -18,7 +18,13 @@ from policycheck.contracts.enums import (
     ValuationBasis,
     ValueBasis,
 )
-from policycheck.contracts.field import BBox, Field, IncludedSentinel, agreement
+from policycheck.contracts.field import (
+    INCLUDED,
+    BBox,
+    Field,
+    IncludedSentinel,
+    agreement,
+)
 from policycheck.contracts.finding import (
     ComparisonResult,
     Finding,
@@ -36,6 +42,7 @@ from policycheck.contracts.snapshot import (
 )
 
 __all__ = [
+    "INCLUDED",
     "AIBasis",
     "AIScope",
     "Address",

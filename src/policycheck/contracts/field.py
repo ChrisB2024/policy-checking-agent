@@ -20,10 +20,11 @@ NOTE: `pydantic.Field` and our `Field` collide. In this file pydantic's is impor
 `PydanticField`. Elsewhere, import ours as `from policycheck.contracts import Field`.
 """
 
-from typing import Any, Self
+from typing import Any, ClassVar, Self, final
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler, model_validator
 from pydantic import Field as PydanticField  # noqa: F401  — used by the TODO(human) below
+from pydantic_core import core_schema
 
 from policycheck.contracts.enums import Confidence, ValueBasis  # noqa: F401  — same
 
@@ -32,6 +33,7 @@ from policycheck.contracts.enums import Confidence, ValueBasis  # noqa: F401  �
 type BBox = tuple[float, float, float, float]
 
 
+@final
 class IncludedSentinel:
     """Marker for a limit printed as "Included" / "Incl." on the dec page.
 
@@ -39,17 +41,64 @@ class IncludedSentinel:
     conflating them produces a phantom `limit_decrease` (spec §4.3).
     """
 
-    # TODO(human): make this a proper singleton that survives Pydantic validation and
-    # JSON round-tripping, and that pyright can narrow on.
-    #   - `__repr__` returning "INCLUDED"
-    #   - `__bool__` returning True (it IS coverage, unlike 0)
-    #   - equality: only equal to itself
-    #   - a `__get_pydantic_core_schema__` classmethod so Pydantic serializes it as the
-    #     string "INCLUDED" and parses that string back into the singleton
-    # Read: https://docs.pydantic.dev/latest/concepts/types/#customizing-validation-with-__get_pydantic_core_schema__
+    _instance: ClassVar["IncludedSentinel | None"] = None
 
+    def __new__(cls) -> "IncludedSentinel":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
-# TODO(human): instantiate the singleton, e.g. `INCLUDED = IncludedSentinel()`
+    def __repr__(self) -> str:
+        return "INCLUDED"
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __eq__(self, other: object) -> bool:
+        return other is self
+
+    def __hash__(self) -> int:
+        # Required: defining __eq__ sets __hash__ = None, and Field is frozen (hashable).
+        return hash(IncludedSentinel)
+
+    def __copy__(self) -> "IncludedSentinel":
+        return self
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "IncludedSentinel":
+        return self
+
+    def __reduce__(self) -> str:
+        return "INCLUDED"  # pickle resolves the module-level name, preserving identity
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        def _serialize(value: Any) -> str:
+            # MUST reject non-sentinels
+            if not isinstance(value, IncludedSentinel):
+                raise ValueError("not the INCLUDED sentinel")
+            return "INCLUDED"
+
+        from_str = core_schema.chain_schema([
+            core_schema.literal_schema(["INCLUDED"]),
+            core_schema.no_info_plain_validator_function(lambda _: INCLUDED),
+        ])
+        return core_schema.json_or_python_schema(
+            json_schema=from_str,
+            python_schema=core_schema.union_schema([
+                core_schema.is_instance_schema(cls),
+                from_str,
+            ]),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                _serialize,
+                return_schema=core_schema.str_schema(),
+                when_used="json"
+            )
+        )
+
+INCLUDED = IncludedSentinel()
+"""The single instance. Compare with `is`, not `==`."""
 
 
 class Field[T](BaseModel):
