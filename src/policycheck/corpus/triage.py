@@ -22,6 +22,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 
 from policycheck.corpus.courtlistener import Candidate
+from policycheck.raster import page_text
 
 # A complete commercial package policy runs long. Below ~25 pages it is almost certainly a
 # certificate, a dec page on its own, or an excerpt; above ~400 it is usually a merged
@@ -45,19 +46,6 @@ UNPROMISING = re.compile(
 # the build. This one only needs to answer "are there a lot of form numbers here"; keep the
 # two separate so nobody tunes the real one against screening results.
 FORM_NUMBER = re.compile(r"\b[A-Z]{2}\s?\d{2}\s?\d{2}\s?(?:\d{2}\s?\d{2})?\b")
-
-# Every PDF in RECAP carries the court's ECF stamp burned into each page, e.g.
-#   "Case 1:06-cv-00157-PLF Document 41-2 Filed 05/31/2007 Page 1 of 39"
-# That stamp is real text even when the page body is a scan. Left in, it makes every
-# scanned document look like it has a text layer — which matters, because spec §3.2 wants
-# at least two image-only pairs and §14 names scanned extraction as the main technical risk.
-ECF_STAMP = re.compile(
-    r"^.*\bCase\b.*\bDoc(?:ument)?\b.*\bFiled\b.*$", re.IGNORECASE | re.MULTILINE
-)
-
-# Chars of real body text (stamp removed) before a page counts as having a text layer.
-# A genuine policy page runs to hundreds; a stray watermark or page number does not.
-TEXT_LAYER_MIN_CHARS = 100
 
 DEC_MARKERS = ("DECLARATIONS", "DECLARATION PAGE", "COMMON POLICY DECLARATIONS")
 SCHEDULE_MARKERS = (
@@ -189,28 +177,27 @@ def screen(path: Path, sample_pages: int = 60) -> Screening:
     Samples the first `sample_pages` pages rather than the whole document: dec page and forms
     schedule appear near the front, and exhibit bundles can run to thousands of pages.
 
-    NOTE: this reads the text layer directly via pypdfium2. Once `raster` lands (C1.2) that
-    becomes the single place PDFs are read — move this over rather than keeping two.
+    Sampling is safe here only because this is a *filter*. A human confirming the document
+    must read all of it — see `.spec/fixtures.md`, where the real forms schedule and limit
+    breakout both sat on page 9 behind a cover note showing neither.
     """
     doc = pdfium.PdfDocument(path)
     try:
-        page_count = len(doc)
-        limit = min(page_count, sample_pages)
+        total = len(doc)
+        limit = min(total, sample_pages)
 
         text_pages = 0
         chunks: list[str] = []
-        for i in range(limit):
-            page = doc[i]
-            raw = page.get_textpage().get_text_bounded() or ""
-            body = ECF_STAMP.sub("", raw).strip()
-            if len(body) >= TEXT_LAYER_MIN_CHARS:
+        for n in range(1, limit + 1):
+            pt = page_text(doc, n)  # raster owns ECF-stamp stripping and the density threshold
+            if pt.has_text_layer:
                 text_pages += 1
-            chunks.append(body.upper())
+            chunks.append(pt.body.upper())
 
         body = "\n".join(chunks)
         return Screening(
             path=path,
-            page_count=page_count,
+            page_count=total,
             text_pages=text_pages,
             has_dec_page=any(m in body for m in DEC_MARKERS),
             has_forms_schedule=any(m in body for m in SCHEDULE_MARKERS),
