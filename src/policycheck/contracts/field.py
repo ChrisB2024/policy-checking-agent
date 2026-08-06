@@ -101,6 +101,22 @@ INCLUDED = IncludedSentinel()
 """The single instance. Compare with `is`, not `==`."""
 
 
+type Money = int | IncludedSentinel
+"""A limit or amount, which may be printed as "Included" rather than a number.
+
+Use `Field[Money]` for anything that appears in a limit or deductible column, and plain
+`Field[int]` / `Field[str]` everywhere else. The sentinel rides on the *type parameter*, not
+on `Field` itself, for two reasons:
+
+  - `Field[str]` would otherwise carry a `{"const": "INCLUDED"}` branch in its JSON schema.
+    That schema is the extractor's prompt surface, and offering "INCLUDED" as a legal value
+    for `named_insured` is noise the model has to reason past.
+  - With the sentinel in `Field`'s own union, a `Field[str]` given the literal string
+    "INCLUDED" resolves to a plain `str` in Python mode and to the sentinel in JSON mode.
+    Scoping it to `Money` makes both modes agree.
+"""
+
+
 class Field[T](BaseModel):
     """A single extracted value plus the evidence for it.
 
@@ -116,7 +132,10 @@ class Field[T](BaseModel):
 
     # TODO(human): declare the envelope fields.
     #
-    #   value: T | IncludedSentinel | None
+    #   value: T | None            — NOT `T | IncludedSentinel | None`. The sentinel rides
+    #                                on the type parameter: use `Field[Money]` for limits and
+    #                                deductibles, `Field[int]` / `Field[str]` elsewhere.
+    #                                See the `Money` docstring above for why.
     #   raw: str | None            — the value exactly as printed
     #   page: int | None           — 1-INDEXED (raster converts at the boundary)
     #   bbox: BBox | None

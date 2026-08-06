@@ -16,7 +16,7 @@ from policycheck.contracts.enums import (
     DeductibleBasis,
     PageClassification,
 )
-from policycheck.contracts.field import Field
+from policycheck.contracts.field import Field, Money
 
 # Every model here is frozen: the pipeline builds new objects rather than mutating.
 _FROZEN = ConfigDict(frozen=True)
@@ -66,24 +66,27 @@ class Identity(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Worked example 2 — note that every limit is Field[int], never bare int, and that
-# "no deductible" is a Field with value=None + basis, not an absent attribute.
+# Worked example 2 — every limit and deductible is `Field[Money]`, never a bare int:
+# a dec page can print "Included" where a number would go, and that is neither $0 nor
+# absent (spec §4.3). Non-amount fields stay on their own type, which keeps the sentinel
+# out of their JSON schema. "No deductible" is a Field with value=None plus a basis, not
+# an absent attribute.
 # ---------------------------------------------------------------------------
 
 
 class GeneralLiability(BaseModel):
     model_config = _FROZEN
 
-    each_occurrence: Field[int]
-    general_aggregate: Field[int]
+    each_occurrence: Field[Money]
+    general_aggregate: Field[Money]
     aggregate_applies_per: Field[AggregateBasis]
-    products_completed_ops_agg: Field[int]
-    personal_advertising_injury: Field[int]
-    damage_to_rented_premises: Field[int]
-    medical_expense: Field[int]
-    deductible_amount: Field[int]
+    products_completed_ops_agg: Field[Money]
+    personal_advertising_injury: Field[Money]
+    damage_to_rented_premises: Field[Money]
+    medical_expense: Field[Money]
+    deductible_amount: Field[Money]
     deductible_basis: Field[DeductibleBasis]
-    sir_amount: Field[int]
+    sir_amount: Field[Money]
 
 
 # ---------------------------------------------------------------------------

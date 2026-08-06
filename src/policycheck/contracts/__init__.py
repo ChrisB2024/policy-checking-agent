@@ -23,6 +23,7 @@ from policycheck.contracts.field import (
     BBox,
     Field,
     IncludedSentinel,
+    Money,
     agreement,
 )
 from policycheck.contracts.finding import (
@@ -66,6 +67,7 @@ __all__ = [
     "IncludedSentinel",
     "InjectedChange",
     "Manifest",
+    "Money",
     "PageClassification",
     "PolicySnapshot",
     "Severity",
