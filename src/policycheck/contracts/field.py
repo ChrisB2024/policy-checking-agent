@@ -121,11 +121,19 @@ class Field[T](BaseModel):
     """A single extracted value plus the evidence for it.
 
     Invariants this model must enforce (see the validator below):
-      - `confidence != NOT_FOUND` implies `page` and `source_text` are both present.
+      - `value is not None` implies `page` and `source_text` are both present.
         No uncited claims (spec invariant 2).
       - `confidence == NOT_FOUND` implies `value is None`.
       - `bbox` is nullable and stays that way. Scanned pages resolve no box, and a *wrong*
         box is far worse than none — it breaks spec invariant 7.
+
+    The first invariant is gated on `value`, not on `confidence`, and that distinction is
+    load-bearing. Spec invariant 2 is about fields that assert something: "every extracted
+    field carries a page citation and a verbatim source snippet, or it does not appear in
+    output". A field with no value has nothing to point at, so demanding it point somewhere
+    is incoherent — and it is exactly the shape the extractor produces when it cannot locate
+    a value: no value, no citation, and `confidence` left at its `LOW` default because the
+    model is told not to set it. Gating on `confidence` would reject that.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -224,10 +232,16 @@ class Field[T](BaseModel):
     @model_validator(mode="after")
     def _citation_required(self) -> Self:
         """Reject any field that claims a value without evidence for it."""
-        # TODO(human): implement the three invariants from the docstring above.
-        # Raise ValueError with a message that names the field path being validated —
-        # this fires during extraction parsing, and a bare "validation error" there is
-        # painful to debug against a 60-page PDF.
+        # TODO(human): implement the three invariants from the class docstring above.
+        #
+        #   value is not None        -> page and source_text both required
+        #   confidence == NOT_FOUND  -> value must be None
+        #   bbox                     -> nullable always; never validate it as required
+        #
+        # Gate the first on `value`, not on `confidence` — see the docstring for why.
+        # Raise ValueError with a message that includes the offending value and its page,
+        # since this fires while parsing an extraction against a 60-page PDF and a bare
+        # "validation error" is painful to trace back to a field.
         return self
 
     @classmethod
