@@ -23,10 +23,10 @@ NOTE: `pydantic.Field` and our `Field` collide. In this file pydantic's is impor
 from typing import Any, ClassVar, Self, final
 
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler, model_validator
-from pydantic import Field as PydanticField  # noqa: F401  — used by the TODO(human) below
+from pydantic import Field as PydanticField
 from pydantic_core import core_schema
 
-from policycheck.contracts.enums import Confidence, ValueBasis  # noqa: F401  — same
+from policycheck.contracts.enums import Confidence, ValueBasis
 
 # PDF user space, origin bottom-left: [x0, y0, x1, y1]. See .spec/modules/raster.md —
 # this is the only coordinate space in the pipeline; the web layer converts, nothing else.
@@ -145,10 +145,81 @@ class Field[T](BaseModel):
     #   extraction_passes_agreed: bool
     #   basis: ValueBasis | None   — why value is None, when it is (excluded vs absent)
     #
-    # Use PydanticField(...) for defaults and descriptions. The descriptions are not
+    # Use PydanticField(...) for defaults and descriptions. The d escriptions are not
     # decoration: this model becomes the JSON schema the extractor is constrained to, so
     # each description is prompt surface the model actually reads. Say "verbatim" in the
     # source_text description.
+
+    value: T | None = PydanticField(
+        default=None,
+        description=(
+            "The normalized value. Null when the coverage does not appear in the "
+            "document or is affirmatively excluded — set `basis` to say which. Never "
+            "guess: a null with a basis is correct, an inferred value is not."
+        )
+    )
+    raw: str | None = PydanticField(
+        default=None,
+        description=(
+            "The value exactly as printed on the page — currency symbols, thousands "
+            "separators, and wording such as 'Included' or 'Incl.' preserved. Do not "
+            "reformat or normalize."
+        ),
+    )
+    page: int | None = PydanticField(
+        default=None,
+        ge=1,
+        description=(
+            "1-indexed page number of the page this value was read from. The first "
+            "page of the document is page 1."
+        ),
+    )
+    bbox: BBox | None = PydanticField(
+        default=None,
+        description=(
+            "Bounding box in PDF user space, origin bottom-left, [x0, y0, x1, y1]. "
+            "Leave null — this is resolved downstream by matching `source_text` "
+            "against the page. A wrong box is worse than no box."
+        )
+    )
+    source_text: str | None = PydanticField(
+        default=None,
+        description=(
+            "The line of text on the page containing this value, copied verbatim — "
+            "character for character, including internal spacing and punctuation. "
+            "Never paraphrase, reorder, or summarize. This exact string is matched "
+            "back against the page to locate the value; a paraphrase matches nothing "
+            "and the citation is lost."
+        ),
+    )
+    # These two default rather than being required, so the extraction schema does not
+    # demand the very fields its descriptions tell the model not to set. LOW/False is the
+    # fail-safe pair: a Field that never went through the merge step has not earned
+    # confidence, and LOW routes it to needs_review — visible doubt rather than a claim of
+    # agreement that never happened (spec invariant 3).
+    confidence: Confidence = PydanticField(
+        default=Confidence.LOW,
+        description=(
+            "Set by the merge step from cross-pass agreement, not self-reported. "
+            "`not_found` means no value was located anywhere in the document."
+        ),
+    )
+    extraction_passes_agreed: bool = PydanticField(
+        default=False,
+        description=(
+            "True when both independent extraction passes produced the same "
+            "normalized value. Set by the merge step."
+        ),
+    )
+    basis: ValueBasis | None = PydanticField(
+        default=None,
+        description=(
+            "Why `value` is null. `excluded` when the document affirmatively shows "
+            "the coverage removed or excluded; `absent` when it simply does not "
+            "appear. Meaningless when `value` is present."
+        ),
+    )
+
 
     @model_validator(mode="after")
     def _citation_required(self) -> Self:
