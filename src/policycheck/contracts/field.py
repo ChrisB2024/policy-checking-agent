@@ -20,6 +20,7 @@ NOTE: `pydantic.Field` and our `Field` collide. In this file pydantic's is impor
 `PydanticField`. Elsewhere, import ours as `from policycheck.contracts import Field`.
 """
 
+import functools
 from typing import Any, ClassVar, Self, final
 
 from pydantic import BaseModel, ConfigDict, GetCoreSchemaHandler, model_validator
@@ -138,25 +139,9 @@ class Field[T](BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # TODO(human): declare the envelope fields.
-    #
-    #   value: T | None            — NOT `T | IncludedSentinel | None`. The sentinel rides
-    #                                on the type parameter: use `Field[Money]` for limits and
-    #                                deductibles, `Field[int]` / `Field[str]` elsewhere.
-    #                                See the `Money` docstring above for why.
-    #   raw: str | None            — the value exactly as printed
-    #   page: int | None           — 1-INDEXED (raster converts at the boundary)
-    #   bbox: BBox | None
-    #   source_text: str | None    — VERBATIM from the page, never paraphrased.
-    #                                raster.find_text matches on this to produce bbox.
-    #   confidence: Confidence
-    #   extraction_passes_agreed: bool
-    #   basis: ValueBasis | None   — why value is None, when it is (excluded vs absent)
-    #
-    # Use PydanticField(...) for defaults and descriptions. The d escriptions are not
-    # decoration: this model becomes the JSON schema the extractor is constrained to, so
-    # each description is prompt surface the model actually reads. Say "verbatim" in the
-    # source_text description.
+    # The descriptions below are not documentation. This model becomes the JSON schema the
+    # extractor is constrained to, so each one is prompt surface the model actually reads —
+    # edit them with that in mind.
 
     value: T | None = PydanticField(
         default=None,
@@ -229,28 +214,70 @@ class Field[T](BaseModel):
     )
 
 
+    def _locator(self) -> str:
+        """Enough identity to find this field in the source PDF from a stack trace."""
+        where = f"page {self.page}" if self.page is not None else "no page"
+        return f"value={self.value!r} raw={self.raw!r} ({where})"
+
     @model_validator(mode="after")
     def _citation_required(self) -> Self:
-        """Reject any field that claims a value without evidence for it."""
-        # TODO(human): implement the three invariants from the class docstring above.
-        #
-        #   value is not None        -> page and source_text both required
-        #   confidence == NOT_FOUND  -> value must be None
-        #   bbox                     -> nullable always; never validate it as required
-        #
-        # Gate the first on `value`, not on `confidence` — see the docstring for why.
-        # Raise ValueError with a message that includes the offending value and its page,
-        # since this fires while parsing an extraction against a 60-page PDF and a bare
-        # "validation error" is painful to trace back to a field.
+        """Reject any field that claims a value without evidence for it.
+
+        The NOT_FOUND check runs first deliberately: a field with `confidence=not_found`
+        carrying an uncited value trips both rules, and the specific message is the useful
+        one.
+        """
+        if self.confidence is Confidence.NOT_FOUND and self.value is not None:
+            raise ValueError(
+                f"not_found field carries a value: {self._locator()}. "
+                f"confidence=not_found means no value was located anywhere in the "
+                f"document; a value here means the merge step wrote one back."
+            )
+
+        if self.value is not None:
+            missing = [
+                name
+                for name, present in (
+                    ("page", self.page is not None),
+                    ("source_text", self.source_text is not None),
+                )
+                if not present
+            ]
+            if missing:
+                raise ValueError(
+                    f"uncited value: {self._locator()} is missing "
+                    f"{' and '.join(missing)}. Every value must cite the page it was "
+                    f"read from and the verbatim line containing it (spec invariant 2)."
+                )
+
         return self
 
+
     @classmethod
+    @functools.cache
     def not_found(cls) -> "Field[T]":
-        """The canonical absent field. Used when the extractor cannot locate a value."""
-        # TODO(human): return a Field with confidence=NOT_FOUND, value=None,
-        # basis=ValueBasis.ABSENT, extraction_passes_agreed=True (both passes agreed it
-        # was absent — disagreement is set by the merge step, not here).
-        raise NotImplementedError
+        """The canonical absent field, produced by the **merge step** when both passes
+        agree nothing is there.
+
+        `extraction_passes_agreed=True` is the reason this is merge-only. A single pass
+        reporting "I could not find it" has not earned that claim and should return a plain
+        `Field()`, which defaults to `LOW` / `False`. Calling this from inside one pass
+        would assert a cross-pass agreement that never happened — the exact failure the
+        defaults on `confidence` and `extraction_passes_agreed` exist to prevent.
+
+        Cached per parametrization: `Field[Money].not_found()` returns one shared instance,
+        distinct from `Field[str].not_found()`. Safe because the model is frozen.
+        """
+        return cls(
+            value=None,
+            raw=None,
+            page=None,
+            bbox=None,
+            source_text=None,
+            confidence=Confidence.NOT_FOUND,
+            extraction_passes_agreed=True,
+            basis=ValueBasis.ABSENT,
+        )
 
     @property
     def needs_review(self) -> bool:
