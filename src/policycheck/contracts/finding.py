@@ -4,11 +4,14 @@ Findings are produced by deterministic rules only. The model never rules on whet
 change matters (spec invariant 1); it only fills `narrative`, last, in a separate pass.
 """
 
+from datetime import date
 from enum import StrEnum
+from typing import Literal, assert_never
 
 from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic import Field as PydanticField
 
+from policycheck.contracts.enums import Confidence
 from policycheck.contracts.field import BBox, IncludedSentinel
 from policycheck.contracts.snapshot import Unresolved
 
@@ -93,6 +96,25 @@ class FindingType(StrEnum):
     AMBIGUOUS_PATH = "ambiguous_path"
     NORMALIZER_VERSION_MISMATCH = "normalizer_version_mismatch"
 
+
+TOOL_FINDINGS: frozenset[FindingType] = frozenset(
+    {
+        FindingType.LOW_CONFIDENCE_FIELD,
+        FindingType.FIELD_NOT_FOUND,
+        FindingType.AMBIGUOUS_PATH,
+        FindingType.NORMALIZER_VERSION_MISMATCH,
+    }
+)
+"""Findings about the run rather than about the policy.
+
+The category already existed as a comment on the enum; declared here because two things need
+it and a second copy is the one that goes stale. `report` groups these apart, and `narrate`
+skips them — "we could not read this field" is a task for the account manager, and §7.1
+already words it as a section heading. Handing it to a model to phrase invites prose about
+the tool's own confusion in a document a client reads.
+"""
+
+
 type Scalar = IncludedSentinel | bool | int | str
 """Normalized value types. Deliberately narrow.
 
@@ -121,6 +143,33 @@ makes no difference under the default mode — verified both ways. It would matt
 """
 
 
+class Unit(StrEnum):
+    """What a normalized value measures. `compare` reads it off the field's schema entry.
+
+    Required, not defaulted. A default is what gets left in place, and a limit rendered
+    `1,000,000` instead of `$1,000,000` is wrong quietly.
+    """
+
+    MONEY = "money"
+    DAYS = "days"
+    PERCENT = "percent"
+    DATE = "date"  # ISO 8601 str; without this, a retro date is a policy number
+    FLAG = "flag"
+    TEXT = "text"
+
+
+_UNIT_VALUE_TYPES: dict[Unit, type] = {
+    Unit.MONEY: int,
+    Unit.DAYS: int,
+    Unit.PERCENT: int,
+    Unit.DATE: str,
+    Unit.FLAG: bool,
+    Unit.TEXT: str,
+}
+"""Coverage is asserted in `tests/contracts/test_display.py`, not by a module-level `assert`
+— `python -O` strips those, and a missing entry is a KeyError raised while building a report."""
+
+
 class FindingSide(BaseModel):
     """One side of a finding — the value plus the evidence a human follows to check it.
 
@@ -143,6 +192,9 @@ class FindingSide(BaseModel):
 
     value: Scalar | None = None
     absent: Unresolved | None = None
+    unit: Unit
+    """What the value measures. Required on an absent side too — the unit belongs to the
+    field path, not to whether this document happened to carry a value for it."""
     raw: str | None = PydanticField(default=None, min_length=1)
     page: int | None = PydanticField(default=None, ge=1)
     bbox: BBox | None = None
@@ -207,14 +259,78 @@ class FindingSide(BaseModel):
 
         missing = [n for n in ("page", "source_text") if getattr(self, n) is None]
         if missing:
+            raise ValueError(f"cited value {self.value!r} is missing {', '.join(missing)}")
+        return self
+
+    @model_validator(mode="after")
+    def _value_matches_unit(self) -> "FindingSide":
+        """A mis-set unit is a `compare` bug, caught at construction — not a "$1" in the
+        report where `True` should have been."""
+        if self.value is None or isinstance(self.value, IncludedSentinel):
+            return self
+        expected = _UNIT_VALUE_TYPES[self.unit]
+        if type(self.value) is not expected:
             raise ValueError(
-                f"cited value {self.value!r} is missing {', '.join(missing)}"
+                f"unit {self.unit} expects {expected.__name__}, got "
+                f"{type(self.value).__name__} ({self.value!r})"
             )
+        if self.unit is Unit.DATE and isinstance(self.value, str):
+            try:
+                date.fromisoformat(self.value)
+            except ValueError:
+                raise ValueError(f"unit date expects ISO 8601, got {self.value!r}") from None
         return self
 
     def display(self) -> str | None:
         """The one place a normalized value becomes text. `report` and `for_narration`
-        both call it, so the AM's report and the client summary can't disagree."""
+        both call it, so the AM's report and the client summary can't disagree.
+
+        `Scalar` has no `Address` member and should not grow one: `compare` renders an
+        address to its normalized form before it gets here (see .spec/modules/compare.md).
+        """
+        v = self.value
+        if v is None:
+            return None
+
+        match v:
+            case IncludedSentinel():
+                # Not an amount - renders the same whatever the unit
+                return "Included"
+            case bool():
+                return "Yes" if v else "No"
+            case int():
+                match self.unit:
+                    case Unit.MONEY:
+                        return f"${v:,}"
+                    case Unit.PERCENT:
+                        return f"{v}%"
+                    case Unit.DAYS:
+                        return f"{v} day{'' if v == 1 else 's'}"
+                    case _:
+                        return f"{v:,}"
+            case str():
+                if self.unit is Unit.DATE:
+                    d = date.fromisoformat(v)
+                    return f"{d:%b} {d.day}, {d.year}"  # %-d isn't portable
+                return v
+            case _:
+                # `Scalar` is a closed union and the cases above cover it. This makes
+                # growing it a type error here rather than a value that renders as nothing.
+                assert_never(v)
+
+    def for_narration(self) -> "NarrationSide | None":
+        """This side as the narrator may see it, or `None` if it may not be shown at all.
+
+        Absence for a reason that is a fact about the *run* — `NO_SUCH_PATH`, `AMBIGUOUS` —
+        has no client-facing sentence. Those only arise on `TOOL_FINDINGS`, which
+        `Finding.for_narration` already drops, so this is the second lock: it makes the
+        guarantee something the code enforces rather than something the caller remembers.
+        """
+        if self.absent is None:
+            return NarrationSide(display=self.display())
+        if self.absent is Unresolved.NO_SUCH_ROW:
+            return NarrationSide(absent=Unresolved.NO_SUCH_ROW)
+        return None
 
 
 class Finding(BaseModel):
@@ -222,17 +338,104 @@ class Finding(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    finding_id: str
-    # TODO(human): type, severity, field_path, prior: FindingSide, current: FindingSide,
-    # narrative: str | None = None, confidence
-    #
-    # `narrative` is the ONLY model-generated field on this object and starts None.
-    # `prior` / `current` are both required even when one side is not_found — the report
-    # renders "absent" explicitly rather than omitting the row.
+    finding_id: str = PydanticField(min_length=1)
+    """Narration's output contract keys on this (`{finding_id: narrative}` validated against
+    known IDs), so an empty one is a merge that silently matches nothing."""
+    type: FindingType
+    severity: Severity
+    """Not cross-checked against `type` here. The type -> default severity map lives in
+    `compare/rules.py` and a second copy in a validator is the copy that goes stale."""
+    field_path: str = PydanticField(min_length=1)
+    prior: FindingSide
+    current: FindingSide
+    """Both required even when one side is absent — the report renders "absent" explicitly
+    rather than omitting the row (spec §5.3)."""
+    confidence: Confidence
+    """The weaker of the two source fields' confidence, set by `compare`, carried for display.
+    **No rule branches on it.** Nearly redundant — a field low on either side becomes
+    `low_confidence_field` and never claims a direction, so every substantive finding is
+    `high` by construction — but §5.3 names it and `not_found` gives it a third state.
 
-    # TODO(human): `for_narration(self) -> NarrationInput` — the projection that drops the
-    # citation fields. One method, so there is exactly one place that decides what the
-    # narrator sees and it can be tested directly.
+    Deliberately not per-side. Which side was low is real utility and a report-design
+    question; settle it after the screen shares rather than guessing now."""
+    narrative: str | None = PydanticField(default=None, min_length=1)
+    """`min_length=1` keeps the two states distinct: None is "not narrated yet", and "" would
+    otherwise be a third state meaning "narrated to nothing"."""
+
+    @model_validator(mode="after")
+    def _sides_agree_on_unit(self) -> "Finding":
+        if self.prior.unit is not self.current.unit:
+            raise ValueError(
+                f"{self.field_path}: sides disagree on unit "
+                f"(prior={self.prior.unit}, current={self.current.unit})"
+            )
+        return self
+
+    def with_narrative(self, narrative: str) -> "Finding":
+        """The merge back in. `model_copy(update=...)` skips validation entirely, so the one
+        field a model writes would be the one field nothing checks — including `min_length`
+        and any later rule about which severities may carry narration."""
+        return self.model_validate({**self.model_dump(), "narrative": narrative})
+
+    def for_narration(self) -> "NarrationInput | None":
+        """The projection that decides what the narrator sees. `None` means "do not narrate".
+
+        Constructed field by field on purpose. `model_dump(exclude=...)` inverts the default:
+        a field added to `Finding` or `FindingSide` would reach the narrator unless someone
+        remembered to exclude it, and forgetting is silent.
+
+        `TOOL_FINDINGS` return `None`. Their sides can be absent for reasons that are facts
+        about the run — a path that resolves nowhere, a document naming one identity twice —
+        and those have no client-facing sentence. Deciding it here rather than at the call
+        site keeps "what may be narrated" in the same place as "what the narrator sees";
+        `narrate()` would otherwise re-derive it, and the two would drift.
+        """
+        if self.type in TOOL_FINDINGS:
+            return None
+        prior = self.prior.for_narration()
+        current = self.current.for_narration()
+        if prior is None or current is None:
+            return None
+        return NarrationInput(
+            finding_id=self.finding_id,
+            type=self.type,
+            field_path=self.field_path,
+            prior=prior,
+            current=current,
+        )
+
+
+class NarrationSide(BaseModel):
+    """One side as the narrator sees it: the rendered value, or the reason there isn't one.
+
+    `absent` is carried because `display() -> None` says a side is missing but not why, and
+    "no longer on the policy" and "we could not read it" are different sentences to a client
+    — one of which is false. It is safe to pass: `Unresolved` is a closed enum we define, not
+    text off the document.
+
+    Narrowed to `NO_SUCH_ROW`, the only member that describes the *policy*. `NO_SUCH_PATH` and
+    `AMBIGUOUS` describe the run — a fixture naming a field that cannot exist, a document
+    naming one identity twice — and a narrator handed those can write about the tool's own
+    confusion in client-facing copy. They only ever appear on `TOOL_FINDINGS`, which
+    `for_narration` drops; this annotation is what makes that structural rather than a
+    convention `narrate` has to remember.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    display: str | None = PydanticField(default=None, min_length=1)
+    absent: Literal[Unresolved.NO_SUCH_ROW] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "NarrationSide":
+        """Holds by construction — `display()` returns None iff `absent` is set — so this
+        pins the biconditional rather than discovering it."""
+        if (self.display is None) == (self.absent is None):
+            raise ValueError(
+                f"exactly one of display/absent is set "
+                f"(display={self.display!r}, absent={self.absent})"
+            )
+        return self
 
 
 class NarrationInput(BaseModel):
@@ -254,16 +457,53 @@ class NarrationInput(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # TODO(human): finding_id, type, field_path, and the two normalized values — prior and
-    # current. Nothing else off `FindingSide`: no page, no bbox, no source_text, no raw.
-    # `raw` is as-printed document text and belongs in the same excluded category as
-    # source_text, even though it looks like a harmless display string.
-    #
-    # Leave `severity` out too, and make that a deliberate call rather than an oversight.
-    # The narrator's job is to restate what changed; severity is what `report` renders.
-    # Handing the model a field labelled `material_adverse` invites exactly the tone that
-    # spec §11 bans — the boundary leaks through tone, not through explicit recommendations
-    # (see .spec/modules/narrate.md, failure modes).
+    finding_id: str
+    type: FindingType
+    field_path: str
+    prior: NarrationSide
+    current: NarrationSide
+
+    # `severity` is absent deliberately, not by oversight. The narrator restates what
+    # changed; severity is what `report` renders. Handing the model a field labelled
+    # `material_adverse` invites exactly the tone spec §11 bans — the boundary leaks through
+    # tone, not through explicit recommendations (.spec/modules/narrate.md, failure modes).
+
+
+SECTION_ORDER: tuple[tuple[Severity, str], ...] = (
+    (Severity.NEEDS_REVIEW, "NEEDS REVIEW — LOW CONFIDENCE EXTRACTION"),
+    (Severity.MATERIAL_ADVERSE, "MATERIAL CHANGES — COVERAGE REDUCED"),
+    (Severity.REVIEW_REQUIRED, "REVIEW REQUIRED"),
+    (Severity.FAVORABLE, "MATERIAL CHANGES — COVERAGE BROADENED"),
+    (Severity.INFORMATIONAL, "INFORMATIONAL"),
+)
+"""§7.1's five sections, in §7.1's order. `SUPPRESSED` is absent and that is the whole of
+its handling — see `ComparisonResult.suppressed`.
+
+Explicit rather than derived from `Severity`'s declaration order, which agrees today: a
+reader reordering the enum for tidiness would otherwise reorder an AM's report.
+"""
+
+
+class Section(BaseModel):
+    """One §7.1 heading and the findings under it.
+
+    The heading travels with its findings so `report` iterates rather than pairs. A separate
+    `severity -> heading` map in `report` is a map that can be one row out of step and still
+    render a full-looking report.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    severity: Severity
+    heading: str
+    findings: tuple[Finding, ...]
+
+    @model_validator(mode="after")
+    def _homogeneous(self) -> "Section":
+        wrong = [f.finding_id for f in self.findings if f.severity is not self.severity]
+        if wrong:
+            raise ValueError(f"{self.heading}: findings of another severity ({wrong})")
+        return self
 
 
 class ComparisonResult(BaseModel):
@@ -271,7 +511,13 @@ class ComparisonResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    findings: list[Finding]
+    findings: tuple[Finding, ...]
+    """`tuple`, not `list`: `frozen=True` stops reassignment but not `result.findings.append`.
+
+    Holds every finding the engine built, `suppressed` included. Filtering happens at render:
+    a decoy expecting `suppressed` has to be emitted to be scored, and one that never reaches
+    this object cannot be told from one the engine never noticed (spec §8).
+    """
     unchanged_verified: int
     """Count of fields compared and found identical.
 
@@ -280,18 +526,67 @@ class ComparisonResult(BaseModel):
     isn't a finding.
     """
 
-    # TODO(human): a helper that groups findings into the six report sections in the
-    # order spec §7.1 prescribes (needs_review FIRST — a checker needs to know what the
-    # tool didn't handle before reading what it did).
+    def sections(self) -> tuple[Section, ...]:
+        """Findings grouped under §7.1's headings, in §7.1's order, empty ones included.
+
+        Empty sections are emitted, never skipped. "MATERIAL CHANGES — COVERAGE REDUCED" with
+        nothing under it says the tool looked and found none; drop the heading and that report
+        is indistinguishable from one where the section was never checked. The distinction is
+        the diligence record.
+
+        Within a section, `findings` order is preserved — so determinism here is `compare`'s
+        to guarantee, not this method's. Sorting on `field_path` would make it self-sufficient
+        at the cost of scrambling coverage-part order into alphabetical, which is worse to
+        read and no more correct.
+
+        Sections hold fresh tuples rather than slices of `findings`; nothing here aliases.
+        """
+        # Pre-seeded from SECTION_ORDER, and deliberately NOT a defaultdict: a defaultdict
+        # invents a bucket for an unmapped severity, which is then never emitted, which turns
+        # the raise below back into the silent drop it exists to prevent.
+        grouped: dict[Severity, list[Finding]] = {sev: [] for sev, _ in SECTION_ORDER}
+
+        for f in self.findings:
+            if f.severity is Severity.SUPPRESSED:
+                continue
+            bucket = grouped.get(f.severity)
+            if bucket is None:
+                raise ValueError(
+                    f"{f.finding_id}: severity {f.severity} has no report section; "
+                    f"add it to SECTION_ORDER"
+                )
+            bucket.append(f)
+
+        return tuple(
+            Section(severity=sev, heading=heading, findings=tuple(grouped[sev]))
+            for sev, heading in SECTION_ORDER
+        )
+
+    @property
+    def suppressed(self) -> tuple[Finding, ...]:
+        """Changes seen and ruled immaterial. §7.1 gives them no section, so the report shows
+        them as a count — the same shape of diligence as `unchanged_verified`: that one is
+        "checked, identical", this is "checked, changed, immaterial".
+
+        Reachable because the eval harness scores it. A decoy has to be emitted to be marked
+        correctly suppressed, and a decoy that never reaches this object cannot be told from
+        one the engine never noticed (spec §8).
+        """
+        return tuple(f for f in self.findings if f.severity is Severity.SUPPRESSED)
 
 
 __all__ = [
+    "SECTION_ORDER",
+    "TOOL_FINDINGS",
     "BBox",
     "ComparisonResult",
     "Finding",
     "FindingSide",
     "FindingType",
     "NarrationInput",
+    "NarrationSide",
     "Scalar",
+    "Section",
     "Severity",
+    "Unit",
 ]

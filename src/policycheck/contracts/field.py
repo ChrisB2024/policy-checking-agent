@@ -81,22 +81,25 @@ class IncludedSentinel:
                 raise ValueError("not the INCLUDED sentinel")
             return "INCLUDED"
 
-        from_str = core_schema.chain_schema([
-            core_schema.literal_schema(["INCLUDED"]),
-            core_schema.no_info_plain_validator_function(lambda _: INCLUDED),
-        ])
+        from_str = core_schema.chain_schema(
+            [
+                core_schema.literal_schema(["INCLUDED"]),
+                core_schema.no_info_plain_validator_function(lambda _: INCLUDED),
+            ]
+        )
         return core_schema.json_or_python_schema(
             json_schema=from_str,
-            python_schema=core_schema.union_schema([
-                core_schema.is_instance_schema(cls),
-                from_str,
-            ]),
+            python_schema=core_schema.union_schema(
+                [
+                    core_schema.is_instance_schema(cls),
+                    from_str,
+                ]
+            ),
             serialization=core_schema.plain_serializer_function_ser_schema(
-                _serialize,
-                return_schema=core_schema.str_schema(),
-                when_used="json"
-            )
+                _serialize, return_schema=core_schema.str_schema(), when_used="json"
+            ),
         )
+
 
 INCLUDED = IncludedSentinel()
 """The single instance. Compare with `is`, not `==`."""
@@ -156,7 +159,7 @@ class Field[T](BaseModel):
             "The normalized value. Null when the coverage does not appear in the "
             "document or is affirmatively excluded — set `basis` to say which. Never "
             "guess: a null with a basis is correct, an inferred value is not."
-        )
+        ),
     )
     raw: str | None = PydanticField(
         default=None,
@@ -180,7 +183,7 @@ class Field[T](BaseModel):
             "Bounding box in PDF user space, origin bottom-left, [x0, y0, x1, y1]. "
             "Leave null — this is resolved downstream by matching `source_text` "
             "against the page. A wrong box is worse than no box."
-        )
+        ),
     )
     source_text: str | None = PydanticField(
         default=None,
@@ -219,7 +222,6 @@ class Field[T](BaseModel):
             "appear. Meaningless when `value` is present."
         ),
     )
-
 
     def _claim(self) -> str:
         """How this field's assertion reads in an error message."""
@@ -283,7 +285,6 @@ class Field[T](BaseModel):
 
         return self
 
-
     @classmethod
     @functools.cache
     def not_found(cls) -> "Field[T]":
@@ -332,6 +333,7 @@ class Field[T](BaseModel):
         """
         return self.page is not None
 
+
 type ClaimKey = tuple[Literal["value", "excluded", "absent"], Any]
 
 
@@ -378,4 +380,3 @@ def agreement[T](a: "Field[T]", b: "Field[T]") -> Confidence:
     if claim_a[0] == "absent":
         return Confidence.NOT_FOUND
     return Confidence.HIGH
-

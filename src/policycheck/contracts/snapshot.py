@@ -217,6 +217,7 @@ class Premium(BaseModel):
 # `compare` and `field_at`, so adding a collection cannot leave the two disagreeing.
 # ---------------------------------------------------------------------------
 
+
 def _unwrap(obj: object, path: str) -> object | None:
     """Follow a dotted path through models, stepping through any `Field` on the way.
 
@@ -458,9 +459,7 @@ class PolicySnapshot(BaseModel):
                 # could have resolved. `forms_schedule.CG9999.nonsense` is broken twice over,
                 # and without this check it reads as a passing absence — the silent-pass in
                 # the measurement layer that `Unresolved` exists to prevent.
-                if found is Unresolved.NO_SUCH_ROW and not _addressable(
-                    element, segments[i + 1 :]
-                ):
+                if found is Unresolved.NO_SUCH_ROW and not _addressable(element, segments[i + 1 :]):
                     return Unresolved.NO_SUCH_PATH
                 if isinstance(found, Unresolved):
                     return found

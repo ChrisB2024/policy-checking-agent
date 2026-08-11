@@ -27,13 +27,18 @@ from policycheck.contracts.field import (
     agreement,
 )
 from policycheck.contracts.finding import (
+    SECTION_ORDER,
+    TOOL_FINDINGS,
     ComparisonResult,
     Finding,
     FindingSide,
     FindingType,
     NarrationInput,
+    NarrationSide,
     Scalar,
+    Section,
     Severity,
+    Unit,
 )
 from policycheck.contracts.manifest import DecoyChange, InjectedChange, Manifest
 from policycheck.contracts.snapshot import (
@@ -56,6 +61,8 @@ from policycheck.contracts.snapshot import (
 
 __all__ = [
     "INCLUDED",
+    "SECTION_ORDER",
+    "TOOL_FINDINGS",
     "AIBasis",
     "AIScope",
     "AdditionalInsured",
@@ -84,6 +91,7 @@ __all__ = [
     "Manifest",
     "Money",
     "NarrationInput",
+    "NarrationSide",
     "PageClassification",
     "PolicySnapshot",
     "Premium",
@@ -92,7 +100,9 @@ __all__ = [
     "PropertyLocation",
     "RiskTransfer",
     "Scalar",
+    "Section",
     "Severity",
+    "Unit",
     "Unresolved",
     "ValuationBasis",
     "ValueBasis",

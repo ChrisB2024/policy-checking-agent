@@ -18,12 +18,15 @@ from policycheck.contracts import (
     FindingSide,
     IncludedSentinel,
     Scalar,
+    Unit,
     Unresolved,
 )
 
 
-def _cited(value: Any) -> FindingSide:
-    return FindingSide(value=value, page=3, source_text="Each Occurrence Limit  $1,000,000")
+def _cited(value: Any, unit: Unit = Unit.MONEY) -> FindingSide:
+    return FindingSide(
+        value=value, unit=unit, page=3, source_text="Each Occurrence Limit  $1,000,000"
+    )
 
 
 def _roundtrip(side: FindingSide) -> FindingSide:
@@ -31,26 +34,29 @@ def _roundtrip(side: FindingSide) -> FindingSide:
 
 
 @pytest.mark.parametrize(
-    ("label", "value"),
+    ("label", "value", "unit"),
     [
         # Strings that look like other types. These are real schema values, and the type
         # they land as is the type the report renders.
-        ("policy_number", "12345"),
-        ("naic_code", "23035"),
-        ("zip5", "02134"),  # a leading zero is data, not formatting
-        ("iso_date", "2025-01-01"),  # snapshot stores dates as ISO strings, not `date`
-        ("form_edition", "04/13"),
-        ("form_family", "CG0001"),
-        ("enum_value", "acv"),
+        ("policy_number", "12345", Unit.TEXT),
+        ("naic_code", "23035", Unit.TEXT),
+        ("zip5", "02134", Unit.TEXT),  # a leading zero is data, not formatting
+        # snapshot stores dates as ISO strings, not `date`
+        ("iso_date", "2025-01-01", Unit.DATE),
+        ("form_edition", "04/13", Unit.TEXT),
+        ("form_family", "CG0001", Unit.TEXT),
+        ("enum_value", "acv", Unit.TEXT),
         # Genuine non-strings.
-        ("money", 1_000_000),
-        ("bool_true", True),
-        ("bool_false", False),
-        ("zero", 0),  # must not become False
+        ("money", 1_000_000, Unit.MONEY),
+        ("days", 30, Unit.DAYS),
+        ("percent", 90, Unit.PERCENT),
+        ("bool_true", True, Unit.FLAG),
+        ("bool_false", False, Unit.FLAG),
+        ("zero", 0, Unit.MONEY),  # must not become False
     ],
 )
-def test_value_keeps_its_type_through_json(label: str, value: object) -> None:
-    assert type(_roundtrip(_cited(value)).value) is type(value), (
+def test_value_keeps_its_type_through_json(label: str, value: object, unit: Unit) -> None:
+    assert type(_roundtrip(_cited(value, unit)).value) is type(value), (
         f"{label}: a {type(value).__name__} came back as something else. `value` is a union "
         f"and JSON cannot tell its members apart — narrow the union rather than reordering it"
     )
@@ -73,7 +79,7 @@ def test_absent_side_survives(reason: Unresolved) -> None:
     `prior` and `current` are both required even when one side is not there — the report
     renders "absent" explicitly rather than omitting the row (spec §5.3).
     """
-    back = _roundtrip(FindingSide(absent=reason))
+    back = _roundtrip(FindingSide(absent=reason, unit=Unit.MONEY))
     assert back.is_present is False
     assert back.absent is reason
     assert back.value is None
@@ -83,9 +89,10 @@ def test_a_side_is_present_or_absent_never_both_and_never_neither() -> None:
     """The two fields are one decision expressed as two attributes, so the type system
     cannot enforce it — the validator has to."""
     with pytest.raises(ValueError, match="exactly one of value/absent"):
-        FindingSide(value=1, absent=Unresolved.NO_SUCH_ROW, page=1, source_text="x")
+        FindingSide(value=1, absent=Unresolved.NO_SUCH_ROW, unit=Unit.MONEY, page=1,
+                    source_text="x")
     with pytest.raises(ValueError, match="says nothing"):
-        FindingSide()
+        FindingSide(unit=Unit.MONEY)
 
 
 def test_present_side_keeps_its_citation() -> None:
@@ -103,25 +110,34 @@ def test_derived_value_carries_provenance_instead_of_a_citation() -> None:
     citation at all, `raw` included: it was never printed.
     """
     side = _roundtrip(
-        FindingSide(value=4650, derived_from=("premium.total", "premium.taxes_fees"))
+        FindingSide(
+            value=4650,
+            unit=Unit.MONEY,
+            derived_from=("premium.total", "premium.taxes_fees"),
+        )
     )
     assert side.derived is True
     assert side.derived_from == ("premium.total", "premium.taxes_fees")
 
     provenance = ("premium.total",)
     with pytest.raises(ValueError, match="derived value"):
-        FindingSide(value=4650, derived_from=provenance, page=3)
+        FindingSide(value=4650, unit=Unit.MONEY, derived_from=provenance, page=3)
     with pytest.raises(ValueError, match="derived value"):
-        FindingSide(value=4650, derived_from=provenance, source_text="Total Premium $4,650")
+        FindingSide(
+            value=4650,
+            unit=Unit.MONEY,
+            derived_from=provenance,
+            source_text="Total Premium $4,650",
+        )
     with pytest.raises(ValueError, match="derived value"):
-        FindingSide(value=4650, derived_from=provenance, raw="$4,650")
+        FindingSide(value=4650, unit=Unit.MONEY, derived_from=provenance, raw="$4,650")
 
 
 def test_derived_is_not_a_flag_that_can_be_set_on_its_own() -> None:
     """`derived` reads off `derived_from`, so the citation requirement cannot be switched
     off without naming what the value came from."""
     assert "derived" not in FindingSide.model_fields
-    assert FindingSide(value=1, page=1, source_text="x").derived is False
+    assert FindingSide(value=1, unit=Unit.MONEY, page=1, source_text="x").derived is False
 
 
 def test_scalar_stays_narrow() -> None:

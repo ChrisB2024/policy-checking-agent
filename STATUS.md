@@ -78,6 +78,27 @@ _Last rewritten: 2026-08-11_
   their client's coverage.
 - **Enum values are an interface.** Manifests address finding types by string, so members match
   §5.2 exactly (`limit_decrease`, not `limit_decreased`). Four had drifted and were renamed.
+- **`FindingSide.value` is a narrow union, and absence is its own field.** Findings round-trip
+  through JSON on every path out (persistence, API, eval harness), and JSON has fewer types
+  than Python. `Decimal` and `date` had no producer and were rewriting real values on reload —
+  a ZIP lost its leading zero, a policy number became a number. `Unresolved` could not survive
+  a union containing `str` at all, so it moved to `absent`.
+- **A derived value carries `derived_from`, not a boolean.** A premium delta appears on no page
+  and cannot cite one, but it can name the paths it was computed from, each of which is cited —
+  invariant 7 survives one hop out instead of being waived. A bare `derived: bool` switched the
+  citation requirement off and told a reviewer nothing.
+- **`Finding.confidence` is display-only** — the weaker of the two source fields, set by
+  `compare`, no rule branching on it. Nearly redundant, since a field low on either side
+  becomes `low_confidence_field` and never claims a direction; kept because §5.3 names it and
+  `not_found` gives it a third state. Per-side confidence is deliberately *not* on
+  `FindingSide` — that's a report-design question for after the screen shares.
+- **Suppressed findings are built and filtered at render**, not skipped. A decoy expecting
+  `suppressed` must be emitted to be scored, or the harness cannot tell "correctly suppressed"
+  from "never noticed" — and that is a 100% gate (spec §8). It is also the diligence record an
+  E&O defence rests on. The section helper returns five groups; `SUPPRESSED` appears in none.
+- **`address_change` fires on `match_key`, and the side carries the normalized rendering.**
+  `STE 200` vs `Suite 200` is not a change, and rendering `raw` would show one — a false
+  positive against a ≤1 per pair gate. `source_text` still carries the printed line.
 - Earlier and unchanged: Python 3.13 + uv with a committed lockfile, Pydantic v2, ruff +
   pyright, SQLAlchemy 2.0 async + Alembic, pikepdf/reportlab/Pillow for `pairgen`,
   `claude-opus-5` for extraction and narration. Deferred per spec §10: ARQ, pgvector.

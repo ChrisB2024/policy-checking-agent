@@ -62,6 +62,14 @@ Two rules deserve their own note:
   recall is gated at 100%; a rule that returns `None` on an edge case is a silent miss.
 - False positives are the second-order killer — a checker who finds two phantom findings stops
   trusting the other forty. Gate is ≤1 per pair.
-- Comparing un-normalized values. `$1,000,000` vs `1000000` is not a limit change.
+- Comparing un-normalized values. `$1,000,000` vs `1000000` is not a limit change. The same
+  trap with addresses: `address_change` fires on a difference in `Address.match_key`, never on
+  the printed text, and the `FindingSide` carries the **normalized** rendering — `STE 200` vs
+  `Suite 200` is not a change, and showing one is a false positive against a ≤1 per pair gate.
+  The AM still sees what is printed, because `source_text` carries the verbatim line;
+  normalized value plus verbatim snippet is how every other field works and an address is not
+  an exception. An address that could not be normalized has `match_key = None`, which never
+  matches anything including another `None` — so it produces no `address_change` at all and
+  lands in `needs_review`, which is the right failure direction.
 - Treating `not_found` on one side as a decrease to zero. That is a `needs_review`, not a
   `limit_decrease`.

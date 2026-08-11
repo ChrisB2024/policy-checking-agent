@@ -74,6 +74,5 @@ class Manifest(BaseModel):
     def material_changes(self) -> tuple[InjectedChange, ...]:
         """Injected changes that must be found - the 100% recall gate"""
         return tuple(
-            c for c in self.injected_changes
-            if c.expected_severity is Severity.MATERIAL_ADVERSE
+            c for c in self.injected_changes if c.expected_severity is Severity.MATERIAL_ADVERSE
         )
