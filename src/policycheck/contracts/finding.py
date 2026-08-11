@@ -4,14 +4,12 @@ Findings are produced by deterministic rules only. The model never rules on whet
 change matters (spec invariant 1); it only fills `narrative`, last, in a separate pass.
 """
 
-from datetime import date
-from decimal import Decimal
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic import Field as PydanticField
 
-from policycheck.contracts.field import BBox
+from policycheck.contracts.field import BBox, IncludedSentinel
 from policycheck.contracts.snapshot import Unresolved
 
 
@@ -95,15 +93,31 @@ class FindingType(StrEnum):
     AMBIGUOUS_PATH = "ambiguous_path"
     NORMALIZER_VERSION_MISMATCH = "normalizer_version_mismatch"
 
-type Scalar = bool | int | Decimal | date | str
-"""Normalized value types.
+type Scalar = IncludedSentinel | bool | int | str
+"""Normalized value types. Deliberately narrow.
 
-`Decimal`, never `float`: these are dollar limits, and a float artifact in a findings report
-reads as an extraction bug to the AM.
+Findings are persisted, served over the API, and read back by the eval harness, so every
+path out of this model is a JSON round-trip — and JSON has fewer types than Python. Each
+member added here is another type the union has to guess between from a bare JSON scalar,
+and a wrong guess silently rewrites a value. `Decimal` and `date` used to be members: they
+made `"12345"` come back as `Decimal('12345')`, `"02134"` as `Decimal('2134')` with the
+leading zero gone, and `"2025-01-01"` as a `date`. Every one of those is a real schema value
+— a policy number, a ZIP, a period start.
 
-`bool` sits ahead of `int` defensively. Pydantic v2's smart union matches exact types first,
-so under the default mode the order makes no difference — verified both ways. It would matter
-under `union_mode="left_to_right"`, where `bool` after `int` lets `True` land as `1`.
+Neither had a producer. `Field[Money]` is `int | IncludedSentinel`, and snapshot stores dates
+as ISO strings ("normalize parses, contracts stays dumb"). **If money ever needs cents,
+`Money` is what changes and this follows** — re-adding `Decimal` here alone reintroduces the
+ambiguity without fixing the layer that actually holds the value.
+
+`IncludedSentinel` is here because a limit printed "Included" is neither `$0` nor absent
+(spec §4.3), and it is the finding layer where conflating them would manufacture a phantom
+`limit_decrease`. It survives the round-trip: its core schema is a literal, which smart union
+scores as an exact match ahead of `str`. A plain `Enum` does not get that treatment, which is
+why `Unresolved` lives on its own field below rather than in this union.
+
+`bool` sits ahead of `int` defensively. Smart union matches exact types first, so the order
+makes no difference under the default mode — verified both ways. It would matter under
+`union_mode="left_to_right"`, where `bool` after `int` lets `True` land as `1`.
 """
 
 
@@ -116,43 +130,78 @@ class FindingSide(BaseModel):
     `source_text` is verbatim text lifted off an untrusted PDF. It has to be here — spec
     invariant 7 needs it for 90-second verification — but it must not reach the narrator.
     See `NarrationInput` below.
+
+    Exactly one of `value` / `absent` is set. A side either has a value or has a reason it
+    doesn't; neither set says nothing, and both set is a contradiction. `absent` is a field
+    of its own rather than a member of `value`'s union because `Unresolved` serializes to a
+    plain string and would be read back as one — an absent side that cannot survive JSON is
+    an absent side that cannot be persisted, and half of every added/removed finding is an
+    absent side.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    value: Scalar | Unresolved
+    value: Scalar | None = None
+    absent: Unresolved | None = None
     raw: str | None = PydanticField(default=None, min_length=1)
     page: int | None = PydanticField(default=None, ge=1)
     bbox: BBox | None = None
     source_text: str | None = PydanticField(default=None, min_length=1)
-    derived: bool = False
+    derived_from: tuple[str, ...] = ()
+    """Field paths this value was computed from, when it was computed rather than read.
+
+    Some values are real but appear on no page — a premium delta, or a structural observation
+    like blanket-to-scheduled. Those cannot carry a citation, which would otherwise make them
+    an unverifiable exception to spec invariant 2.
+
+    Naming the inputs keeps invariant 7 intact one hop out: the reader cannot follow a delta
+    to a page, but can follow it to the two totals it came from, and each of those is cited.
+    That is why this is a tuple of paths and not a `derived: bool` — a boolean that switches
+    the citation requirement off is the thing that gets set to make a validation error go
+    away, and it tells a reviewer nothing. Empty means "read off the page", and the only way
+    to claim otherwise is to say what from.
+
+    Not validated against a snapshot; `FindingSide` has none. `compare` populates it and the
+    eval harness can check the paths resolve.
+    """
 
     @property
     def is_present(self) -> bool:
-        return not isinstance(self.value, Unresolved)
+        return self.absent is None
+
+    @property
+    def derived(self) -> bool:
+        return bool(self.derived_from)
 
     @model_validator(mode="after")
     def _evidence_matches_presence(self) -> "FindingSide":
-        """Citation and presence co-vary. A present value without a page violates the
-        page-level-citation invariant; an absent value with a page is a rules-engine bug."""
-        # TODO(human): spec invariant 2 is "page citation AND verbatim source snippet", and
-        # `compare.md` says every finding carries both sides' page + source_text. This checks
-        # only `page`, so it is a weaker gate than `Field._citation_required` — on the object
-        # that actually reaches the report. Decide whether `source_text` joins the first
-        # branch; if there is a present side that legitimately has no snippet, write down
-        # what it is, because that is the exception the report has to render.
+        """Citation and presence co-vary. A present value without a citation violates spec
+        invariant 2; an absent value with one is a rules-engine bug."""
+        if self.absent is not None and self.value is not None:
+            raise ValueError(
+                f"side is both present ({self.value!r}) and absent ({self.absent}); "
+                f"exactly one of value/absent is set"
+            )
+
         if not self.is_present:
             if any((self.page, self.bbox, self.source_text, self.raw)):
-                raise ValueError(f"absent side ({self.value}) carries evidence")
+                raise ValueError(f"absent side ({self.absent}) carries evidence")
             if self.derived:
-                raise ValueError(f"absent side ({self.value}) cannot be derived")
+                raise ValueError(f"absent side ({self.absent}) cannot be derived")
             return self
 
+        if self.value is None:
+            raise ValueError(
+                "side has neither a value nor a reason it is absent; a side that says "
+                "nothing cannot be rendered or verified"
+            )
+
         if self.derived:
-            if any((self.page, self.bbox, self.source_text)):
+            if any((self.page, self.bbox, self.source_text, self.raw)):
                 raise ValueError(
                     f"derived value {self.value!r} carries a citation; "
-                    "a derived value is not on a page"
+                    "a derived value is not on a page, so it has no `raw` printed form "
+                    "either"
                 )
             return self
 

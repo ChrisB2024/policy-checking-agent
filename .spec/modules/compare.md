@@ -44,7 +44,12 @@ Two rules deserve their own note:
 - No model calls. If a rule needs judgment the rules can't express, it emits
   `review_required`, not a guess.
 - Every finding carries both sides' `page` + `source_text` (spec §5.3) so a human can verify it
-  in under 90 seconds.
+  in under 90 seconds. The one exception is a **derived** value — a premium delta, a
+  structural observation like blanket-to-scheduled — which is computed rather than read and
+  appears on no page. Those carry `derived_from`: the field paths they were computed from,
+  each of which is itself cited. Invariant 7 survives one hop out, and the reader is never
+  asked to take a number on trust. A derived side with an empty `derived_from` is a value
+  with no provenance of either kind, and `FindingSide` rejects it.
 - `narrative` is `None` when leaving this module.
 - Decoy changes (premium, mailing address, agent of record, policy number, carrier name where
   coverage is unchanged) produce `informational` or `suppressed` findings — never adverse.
