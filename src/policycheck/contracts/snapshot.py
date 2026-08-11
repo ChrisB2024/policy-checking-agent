@@ -7,8 +7,10 @@ findings, and the eval harness all address fields through.
 """
 
 import re
+from collections.abc import Sequence
 from enum import Enum
-from typing import Any, ClassVar, cast, get_args
+from types import UnionType
+from typing import Any, ClassVar, TypeIs, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict
 
@@ -215,7 +217,6 @@ class Premium(BaseModel):
 # `compare` and `field_at`, so adding a collection cannot leave the two disagreeing.
 # ---------------------------------------------------------------------------
 
-
 def _unwrap(obj: object, path: str) -> object | None:
     """Follow a dotted path through models, stepping through any `Field` on the way.
 
@@ -258,6 +259,59 @@ class Unresolved(Enum):
     AMBIGUOUS = "ambiguous"
 
 
+_SEGMENT = re.compile(r"(?P<name>[A-Za-z_]\w*)(?P<indexes>(?:\[\d+\])*)")
+"""One path segment: an attribute name plus any positional indexes. Shared by both walks —
+two copies of this pattern is how the type walk and the value walk start disagreeing."""
+
+_INDEX = re.compile(r"\[(\d+)\]")
+
+
+def _strip_optional(annotation: Any) -> Any:
+    """`X | None` -> `X`. Anything else passes through untouched.
+
+    `Identity.retroactive_date` is `Field[str] | None`, and the walk cares about the `Field`,
+    not the nullability — an optional section is still addressable.
+    """
+    if get_origin(annotation) not in (Union, UnionType):
+        return annotation
+    args = [a for a in get_args(annotation) if a is not type(None)]
+    return args[0] if len(args) == 1 else annotation
+
+
+def _is_field(annotation: Any) -> bool:
+    """True for `Field[...]`. Pydantic builds a concrete class per parametrization, so this
+    is an ordinary subclass test rather than an origin check."""
+    return isinstance(annotation, type) and issubclass(annotation, Field)
+
+
+def _is_model(annotation: Any) -> TypeIs[type[BaseModel]]:
+    """True for a model the walk may descend into.
+
+    `Field` is excluded deliberately. It *is* a `BaseModel` subclass, so a plain subclass test
+    would let the type walk step inside one — which `field_at` refuses to do. These two walks
+    are only worth having while they agree, and agreeing by construction beats agreeing by
+    coincidence.
+    """
+    return (
+        isinstance(annotation, type)
+        and issubclass(annotation, BaseModel)
+        and not issubclass(annotation, Field)
+    )
+
+
+def _keyed_element_of(annotation: Any) -> type[BaseModel] | None:
+    """Element type of a `list[...]` annotation whose elements declare `_match_key`."""
+    if get_origin(annotation) is not list:
+        return None
+    args = get_args(annotation)
+    if len(args) != 1:
+        return None
+    element = args[0]
+    if not (isinstance(element, type) and issubclass(element, BaseModel)):
+        return None
+    return element if isinstance(getattr(element, "_match_key", None), str) else None
+
+
 def _keyed_element(owner: type[BaseModel], name: str) -> type[BaseModel] | None:
     """Element type of `owner.name` when it is a list of models declaring `_match_key`.
 
@@ -265,15 +319,49 @@ def _keyed_element(owner: type[BaseModel], name: str) -> type[BaseModel] | None:
     keyed collection before it has an element in hand.
     """
     info = owner.model_fields.get(name)
-    if info is None:
-        return None
-    args = get_args(info.annotation)
-    if len(args) != 1:
-        return None
-    element = args[0]
-    if not (isinstance(element, type) and issubclass(element, BaseModel)):
-        return None
-    return element if isinstance(getattr(element, "_match_key", None), str) else None
+    return None if info is None else _keyed_element_of(_strip_optional(info.annotation))
+
+
+def _addressable(element: type[BaseModel], segments: Sequence[str]) -> bool:
+    """Whether `segments` could resolve to a Field on `element`, had the row existed.
+
+    The `field_at` walk run against `model_fields` instead of values. It answers "can this
+    path ever resolve", never "does this document contain it" — which is what lets a row miss
+    be told apart from a fixture naming a field that cannot exist (spec §3.2).
+    """
+    current: Any = element
+
+    for segment in segments:
+        keyed = _keyed_element_of(current)
+        if keyed is not None:
+            # The segment IS a match key: consume it and drop to the element type.
+            current = keyed
+            continue
+
+        # A Field, an unkeyed list, or a leaf: the value walk stops here too.
+        if not _is_model(current):
+            return False
+
+        match = _SEGMENT.fullmatch(segment)
+        if match is None:
+            return False
+
+        info = current.model_fields.get(match["name"])
+        if info is None:
+            return False
+        current = _strip_optional(info.annotation)
+
+        for _ in _INDEX.findall(match["indexes"]):
+            if get_origin(current) is not list:
+                return False
+            args = get_args(current)
+            if len(args) != 1:
+                return False
+            current = _strip_optional(args[0])
+
+    # An empty tail lands here: a row is not a Field, so addressing one is not addressing
+    # a value.
+    return _is_field(current)
 
 
 def _match_in(items: list[Any], key: str) -> BaseModel | Unresolved:
@@ -285,9 +373,13 @@ def _match_in(items: list[Any], key: str) -> BaseModel | Unresolved:
     not an edge case; `.spec/fixtures.md` records a document whose two schedules each omit
     forms the other lists, so merging them duplicates families by construction.
 
-    Returns `NO_SUCH_PATH` when nothing matched, when the elements declare no `_match_key`,
-    and when they are not models at all — a `list[Field[str]]` such as `scheduled_parties`
-    has no identity to key on and is addressed by position instead.
+    Returns `NO_SUCH_ROW` when the collection is keyed but holds no such row — including when
+    it is empty. That is what a manifest asserting `to: null` expects to see, so it must not
+    read as a broken fixture.
+
+    Returns `NO_SUCH_PATH` only when the collection cannot be keyed at all: elements that
+    declare no `_match_key`, or that are not models — a `list[Field[str]]` such as
+    `scheduled_parties` has no identity to key on and is addressed by position instead.
 
     An element whose resolved key is None never matches, not even another None. `_unwrap`
     collapses three situations into None (no such attribute, key present but null, wrapping
@@ -298,6 +390,7 @@ def _match_in(items: list[Any], key: str) -> BaseModel | Unresolved:
     objects.
     """
     matches: list[BaseModel] = []
+    keyed = False
     for item in items:
         if not isinstance(item, BaseModel) or isinstance(item, Field):
             continue
@@ -316,15 +409,10 @@ def _match_in(items: list[Any], key: str) -> BaseModel | Unresolved:
     if len(matches) > 1:
         return Unresolved.AMBIGUOUS
     if matches:
-        # TODO(human): this is the NO_SUCH_ROW case, not NO_SUCH_PATH. The key is well
-        # formed and the collection is keyed — the document simply has no such row, which
-        # is what a manifest asserting `to: null` expects to see. Returning NO_SUCH_PATH
-        # here makes the harness report a data error for a correct fixture, which is the
-        # exact collapse `Unresolved` was introduced to prevent.
         return matches[0]
     if items and not keyed:
         return Unresolved.NO_SUCH_PATH
-    return matches[0]
+    return Unresolved.NO_SUCH_ROW
 
 
 class PolicySnapshot(BaseModel):
@@ -361,26 +449,25 @@ class PolicySnapshot(BaseModel):
         element: type[BaseModel] | None = None
         segments = path.split(".")
 
-        # `i` is unused until `_addressable` lands below, which needs `segments[i + 1:]`.
-        for i, segment in enumerate(segments):  # noqa: B007
+        for i, segment in enumerate(segments):
             if isinstance(current, list):
                 if element is None:
                     return Unresolved.NO_SUCH_PATH
                 found = _match_in(current, segment)
-                # TODO(human): write `_addressable(element, segments[i + 1:])` and use it
-                # here. When `_match_in` finds no row, the two cases are distinguishable and
-                # must be: if the remaining segments are valid attributes on `element`, the
-                # document simply lacks that row (NO_SUCH_ROW, and a manifest asserting
-                # `to: null` should pass); if they are not, the fixture names something that
-                # cannot exist (NO_SUCH_PATH, report it). `_keyed_element` already gives you
-                # the element type, so `_addressable` is the walk below done against
-                # `model_fields` instead of against values — no instance needed.
+                # A missing row only means "this document lacks it" if the rest of the path
+                # could have resolved. `forms_schedule.CG9999.nonsense` is broken twice over,
+                # and without this check it reads as a passing absence — the silent-pass in
+                # the measurement layer that `Unresolved` exists to prevent.
+                if found is Unresolved.NO_SUCH_ROW and not _addressable(
+                    element, segments[i + 1 :]
+                ):
+                    return Unresolved.NO_SUCH_PATH
                 if isinstance(found, Unresolved):
                     return found
                 current, element = found, None
                 continue
 
-            match = re.fullmatch(r"(?P<name>[A-Za-z_]\w*)(?P<indexes>(?:\[\d+\])*)", segment)
+            match = _SEGMENT.fullmatch(segment)
             if match is None:
                 return Unresolved.NO_SUCH_PATH
 
@@ -396,16 +483,21 @@ class PolicySnapshot(BaseModel):
             current = getattr(current, name)
             element = _keyed_element(owner, name)
 
-            for index_text in re.findall(r"\[(\d+)\]", match["indexes"]):
+            for index_text in _INDEX.findall(match["indexes"]):
                 if not isinstance(current, list):
                     return Unresolved.NO_SUCH_PATH
 
                 index = int(index_text)
                 if index >= len(current):
-                    # A positional address past the end of a real list: the path is well
-                    # formed, the row is not there. Same case as a keyed miss — settle it
-                    # with NO_SUCH_ROW when you wire that up.
-                    return Unresolved.NO_SUCH_PATH
+                    # Well-formed address into a real list, row not there — structurally the
+                    # same as a keyed miss, so it answers the same way, including the tail
+                    # check. A positional and a keyed address of the same absent row must not
+                    # disagree. `element` is None for a list whose members carry no identity
+                    # (`dba: list[Field[str]]`); there is no type to check the tail against,
+                    # so those report the absence unqualified.
+                    if element is not None and not _addressable(element, segments[i + 1 :]):
+                        return Unresolved.NO_SUCH_PATH
+                    return Unresolved.NO_SUCH_ROW
 
                 current, element = current[index], None
 
