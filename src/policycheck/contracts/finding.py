@@ -49,6 +49,10 @@ class FindingSide(BaseModel):
     # TODO(human): value, page, bbox (nullable), source_text.
     # Note this is deliberately NOT a Field[T]: by the time a finding exists the value is
     # normalized and the confidence question is already resolved into the severity.
+    #
+    # `source_text` is verbatim text lifted off an untrusted PDF. It has to be here —
+    # spec invariant 7 needs it for 90-second verification — but it must not reach the
+    # narrator. See `NarrationInput` below.
 
 
 class Finding(BaseModel):
@@ -63,6 +67,41 @@ class Finding(BaseModel):
     # `narrative` is the ONLY model-generated field on this object and starts None.
     # `prior` / `current` are both required even when one side is not_found — the report
     # renders "absent" explicitly rather than omitting the row.
+
+    # TODO(human): `for_narration(self) -> NarrationInput` — the projection that drops the
+    # citation fields. One method, so there is exactly one place that decides what the
+    # narrator sees and it can be tested directly.
+
+
+class NarrationInput(BaseModel):
+    """What the narrator is allowed to see. The only thing `narrate()` accepts.
+
+    An uploaded PDF is untrusted input to a language model, and `Finding` carries verbatim
+    regions of it in `FindingSide.source_text`. Passing findings straight to narration hands
+    the model attacker-controlled text from the document it is describing. This model is the
+    boundary: `narrate()` is typed to take these, so the narrator is structurally incapable of
+    receiving a page snippet rather than merely conventionally denied one.
+
+    Note the honest limit. A normalized value can still be document-derived text — a
+    `named_insured`, a form title, a scheduled party name are all strings copied off the page.
+    This narrows the model's exposure to short normalized values; it does not eliminate it.
+    What actually contains an injection is the output contract: narration returns
+    `{finding_id: narrative}` validated against known IDs, so a manipulated narrator can
+    corrupt wording but cannot add a finding, drop one, or change a severity.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    # TODO(human): finding_id, type, field_path, and the two normalized values — prior and
+    # current. Nothing else off `FindingSide`: no page, no bbox, no source_text, no raw.
+    # `raw` is as-printed document text and belongs in the same excluded category as
+    # source_text, even though it looks like a harmless display string.
+    #
+    # Leave `severity` out too, and make that a deliberate call rather than an oversight.
+    # The narrator's job is to restate what changed; severity is what `report` renders.
+    # Handing the model a field labelled `material_adverse` invites exactly the tone that
+    # spec §11 bans — the boundary leaks through tone, not through explicit recommendations
+    # (see .spec/modules/narrate.md, failure modes).
 
 
 class ComparisonResult(BaseModel):

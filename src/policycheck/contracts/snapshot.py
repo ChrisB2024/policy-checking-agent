@@ -2,19 +2,27 @@
 
 This is the object the comparison engine operates on. It never sees raw text (spec §4.2).
 
-Two sections below are written out as a worked example (`Identity`, `GeneralLiability`).
-The rest are `TODO(human)` — transcribe them from spec §4.2 following the same pattern.
-Watch for the shape of each: some are flat, `Property` has a list of sub-models, and
-`RiskTransfer` nests two levels.
+Every section of spec §4.2, plus `field_at` — the string-path resolver that manifests,
+findings, and the eval harness all address fields through.
 """
+
+import re
+from enum import Enum
+from typing import Any, ClassVar, cast, get_args
 
 from pydantic import BaseModel, ConfigDict
 
 from policycheck.contracts.enums import (
     AggregateBasis,
+    AIBasis,
+    AIScope,
+    AuditBasis,
+    BusinessIncomeBasis,
+    CausesOfLoss,
     CoverageTrigger,
     DeductibleBasis,
     PageClassification,
+    ValuationBasis,
 )
 from policycheck.contracts.field import Field, Money
 
@@ -32,9 +40,13 @@ class Address(BaseModel):
 
     model_config = _FROZEN
 
-    # TODO(human): street, unit, city, state, zip5 — plus a `normalized` key used for
-    # matching. Decide whether `normalized` is stored or computed; whichever you pick,
-    # matching must be stable across "STE 200" / "Suite 200" / "#200".
+    raw: str
+    street: str | None
+    unit: str | None
+    city: str | None
+    state: str | None
+    zip5: str | None
+    match_key: str | None
 
 
 class DocumentMeta(BaseModel):
@@ -89,23 +101,33 @@ class GeneralLiability(BaseModel):
     sir_amount: Field[Money]
 
 
-# ---------------------------------------------------------------------------
-# TODO(human): the rest of spec §4.2, same pattern.
-# ---------------------------------------------------------------------------
-
-
 class PropertyLocation(BaseModel):
     """One scheduled location. spec §4.2 -> property.locations[]"""
 
     model_config = _FROZEN
-    # TODO(human): location_number, address, building_limit, bpp_limit, valuation,
-    # coinsurance_pct, deductible
+
+    # Dotted because the key lives inside the Address that the Field wraps: `address` is a
+    # Field, so resolving this hops through `.value` before reading `.match_key`.
+    _match_key: ClassVar[str] = "address.match_key"
+
+    location_number: Field[str]
+    address: Field[Address]
+    building_limit: Field[Money]
+    bpp_limit: Field[Money]
+    valuation: Field[ValuationBasis]
+    coinsurance_pct: Field[int]
+    deductible: Field[Money]
 
 
 class Property(BaseModel):
     model_config = _FROZEN
-    # TODO(human): blanket_coverage, blanket_limit, causes_of_loss_form, locations[],
-    # business_income_limit, business_income_basis, period_of_indemnity_months
+    blanket_coverage: Field[bool]
+    blanket_limit: Field[Money]
+    causes_of_loss_form: Field[CausesOfLoss]
+    locations: list[PropertyLocation]
+    business_income_limit: Field[Money]
+    business_income_basis: Field[BusinessIncomeBasis]
+    period_of_indemnity_months: Field[int]
 
 
 class FormRef(BaseModel):
@@ -119,22 +141,35 @@ class FormRef(BaseModel):
     """
 
     model_config = _FROZEN
-    # TODO(human): form_family, edition, title, raw_form_number
+
+    # spec §5.1 matches forms by family, so family is also how a manifest addresses one:
+    # `forms_schedule.CG0001.edition`. Declared once, read by both `compare` and `field_at`.
+    _match_key: ClassVar[str] = "form_family"
+
+    form_family: Field[str]
+    edition: Field[str]
+    title: Field[str]
+    raw_form_number: Field[str]
 
 
 class AdditionalInsured(BaseModel):
     model_config = _FROZEN
-    # TODO(human): present, basis, scope, scheduled_parties[], governing_forms[]
+    present: Field[bool]
+    basis: Field[AIBasis]
+    scope: Field[AIScope]
+    scheduled_parties: list[Field[str]]
+    governing_forms: list[Field[str]]
 
 
 class WaiverOfSubrogation(BaseModel):
     model_config = _FROZEN
-    # TODO(human): present, basis
+    present: Field[bool]
+    basis: Field[AIBasis]
 
 
 class PrimaryNoncontributory(BaseModel):
     model_config = _FROZEN
-    # TODO(human): present
+    present: Field[bool]
 
 
 class RiskTransfer(BaseModel):
@@ -146,20 +181,150 @@ class RiskTransfer(BaseModel):
     """
 
     model_config = _FROZEN
-    # TODO(human): additional_insured, waiver_of_subrogation, primary_noncontributory,
-    # notice_of_cancellation_days
+    additional_insured: AdditionalInsured
+    waiver_of_subrogation: WaiverOfSubrogation
+    primary_noncontributory: PrimaryNoncontributory
+    notice_of_cancellation_days: Field[int]
 
 
 class Exclusion(BaseModel):
     """An endorsement identified as coverage-restricting."""
 
     model_config = _FROZEN
-    # TODO(human): form_family, title, subject (short normalized tag, e.g. "habitability")
+
+    _match_key: ClassVar[str] = "form_family"
+
+    form_family: Field[str]
+    title: Field[str]
+    subject: Field[str]
 
 
 class Premium(BaseModel):
     model_config = _FROZEN
-    # TODO(human): total, taxes_fees, audit_basis
+    total: Field[Money]
+    taxes_fees: Field[Money]
+    audit_basis: Field[AuditBasis]
+
+
+# ---------------------------------------------------------------------------
+# Addressing collection members by match key (spec §5.1, §3.2).
+#
+# `forms_schedule.CG0001.edition` addresses a form by its family, not its position, for the
+# same reason §5.1 matches forms by family: order differs between documents. The key each
+# collection uses is declared once on the element model as `_match_key` and read by both
+# `compare` and `field_at`, so adding a collection cannot leave the two disagreeing.
+# ---------------------------------------------------------------------------
+
+
+def _unwrap(obj: object, path: str) -> object | None:
+    """Follow a dotted path through models, stepping through any `Field` on the way.
+
+    `Field` is transparent here — `"address.match_key"` means the Address inside the
+    `address` Field, then its `match_key`. This is the one place that reaches inside a
+    Field on purpose; `field_at` must not.
+
+    Returns None for anything unresolvable rather than raising: a model declaring a stale
+    `_match_key` should surface as an unaddressable path, not a crash inside the eval
+    harness. Membership is tested against `model_fields`, not `hasattr`, so a stale key
+    cannot resolve to a method or a ClassVar.
+    """
+    current: object = obj
+    for segment in path.split("."):
+        if isinstance(current, Field):
+            current = current.value
+
+        if not isinstance(current, BaseModel) or segment not in type(current).model_fields:
+            return None
+
+        current = getattr(current, segment)
+
+    if isinstance(current, Field):
+        current = current.value
+
+    return current
+
+
+class Unresolved(Enum):
+    """Why a path did not resolve to a Field.
+
+    Three outcomes the eval harness must tell apart (spec §3.2): a broken fixture, a row the
+    document legitimately does not contain, and a document that names one identity twice.
+    Collapsing them onto a single `None` makes the harness unable to distinguish a fixture
+    it should report from one it should pass.
+    """
+
+    NO_SUCH_PATH = "no_such_path"
+    NO_SUCH_ROW = "no_such_row"
+    AMBIGUOUS = "ambiguous"
+
+
+def _keyed_element(owner: type[BaseModel], name: str) -> type[BaseModel] | None:
+    """Element type of `owner.name` when it is a list of models declaring `_match_key`.
+
+    Type-level, not value-level: this is what lets `field_at` know a segment is addressing a
+    keyed collection before it has an element in hand.
+    """
+    info = owner.model_fields.get(name)
+    if info is None:
+        return None
+    args = get_args(info.annotation)
+    if len(args) != 1:
+        return None
+    element = args[0]
+    if not (isinstance(element, type) and issubclass(element, BaseModel)):
+        return None
+    return element if isinstance(getattr(element, "_match_key", None), str) else None
+
+
+def _match_in(items: list[Any], key: str) -> BaseModel | Unresolved:
+    """The element of `items` whose declared match key equals `key`.
+
+    Returns `AMBIGUOUS` when two rows claim the same key — a forms schedule carrying CG2010
+    at two editions must not silently resolve to whichever sorted first, for the same reason
+    `raster.find_text` refuses an ambiguous needle: a wrong row is worse than no row. This is
+    not an edge case; `.spec/fixtures.md` records a document whose two schedules each omit
+    forms the other lists, so merging them duplicates families by construction.
+
+    Returns `NO_SUCH_PATH` when nothing matched, when the elements declare no `_match_key`,
+    and when they are not models at all — a `list[Field[str]]` such as `scheduled_parties`
+    has no identity to key on and is addressed by position instead.
+
+    An element whose resolved key is None never matches, not even another None. `_unwrap`
+    collapses three situations into None (no such attribute, key present but null, wrapping
+    Field had no value) and all three mean "this element has no identity". Letting them
+    compare equal pairs two unidentifiable rows with each other — the phantom match §5.1
+    exists to prevent. Comparison is exact and uncoerced: keys are normalized upstream, and
+    casefolding here would make `field_at` disagree with how `compare` pairs the same
+    objects.
+    """
+    matches: list[BaseModel] = []
+    for item in items:
+        if not isinstance(item, BaseModel) or isinstance(item, Field):
+            continue
+        match_path = getattr(type(item), "_match_key", None)
+        if not isinstance(match_path, str):
+            continue
+
+        keyed = True
+
+        resolved_key = _unwrap(item, match_path)
+        if resolved_key is None:
+            continue
+        if resolved_key == key:
+            matches.append(item)
+
+    if len(matches) > 1:
+        return Unresolved.AMBIGUOUS
+    if matches:
+        # TODO(human): this is the NO_SUCH_ROW case, not NO_SUCH_PATH. The key is well
+        # formed and the collection is keyed — the document simply has no such row, which
+        # is what a manifest asserting `to: null` expects to see. Returning NO_SUCH_PATH
+        # here makes the harness report a data error for a correct fixture, which is the
+        # exact collapse `Unresolved` was introduced to prevent.
+        return matches[0]
+    if items and not keyed:
+        return Unresolved.NO_SUCH_PATH
+    return matches[0]
 
 
 class PolicySnapshot(BaseModel):
@@ -170,19 +335,80 @@ class PolicySnapshot(BaseModel):
     document: DocumentMeta
     identity: Identity
     general_liability: GeneralLiability
-    # TODO(human): property, forms_schedule: list[FormRef], risk_transfer,
-    # exclusions: list[Exclusion], premium
+    property: Property
+    forms_schedule: list[FormRef]
+    risk_transfer: RiskTransfer
+    exclusions: list[Exclusion]
+    premium: Premium
 
-    def field_at(self, path: str) -> Field[object] | None:
-        """Resolve a dotted `field_path` (e.g. "gl.each_occurrence_limit") to its Field.
+    def field_at(self, path: str) -> Field[object] | Unresolved:
+        """Resolve a dotted `field_path` (e.g. "general_liability.each_occurrence") to its Field.
 
         Manifests, findings, and the eval harness all address fields by string path
         (spec §3.2, §5.3). Deriving that from the model — rather than maintaining a
         hand-written path table — is what stops a newly added field from being silently
         skipped by the eval harness (see .spec/modules/contracts.md, failure modes).
+
+        Collection members are addressed two ways: by position
+        (`property.locations[0].valuation`) or by match key
+        (`forms_schedule.CG0001.edition`). Prefer the key — §5.1 pairs forms and locations by
+        key precisely because position is unstable between documents.
+
+        Never raises. An unaddressable path is a data error the harness reports per pair, not
+        a crash that kills the run; see `Unresolved` for how the three failure shapes differ.
         """
-        # TODO(human): walk the model by attribute, supporting list indexing for
-        # `property.locations[0].valuation`. Return None for an unknown path rather than
-        # raising — an unknown path in a manifest is a data error the eval harness should
-        # report per-pair, not a crash that kills the whole run.
-        raise NotImplementedError
+        current: object = self
+        element: type[BaseModel] | None = None
+        segments = path.split(".")
+
+        # `i` is unused until `_addressable` lands below, which needs `segments[i + 1:]`.
+        for i, segment in enumerate(segments):  # noqa: B007
+            if isinstance(current, list):
+                if element is None:
+                    return Unresolved.NO_SUCH_PATH
+                found = _match_in(current, segment)
+                # TODO(human): write `_addressable(element, segments[i + 1:])` and use it
+                # here. When `_match_in` finds no row, the two cases are distinguishable and
+                # must be: if the remaining segments are valid attributes on `element`, the
+                # document simply lacks that row (NO_SUCH_ROW, and a manifest asserting
+                # `to: null` should pass); if they are not, the fixture names something that
+                # cannot exist (NO_SUCH_PATH, report it). `_keyed_element` already gives you
+                # the element type, so `_addressable` is the walk below done against
+                # `model_fields` instead of against values — no instance needed.
+                if isinstance(found, Unresolved):
+                    return found
+                current, element = found, None
+                continue
+
+            match = re.fullmatch(r"(?P<name>[A-Za-z_]\w*)(?P<indexes>(?:\[\d+\])*)", segment)
+            if match is None:
+                return Unresolved.NO_SUCH_PATH
+
+            name = match["name"]
+            if (
+                not isinstance(current, BaseModel)
+                or isinstance(current, Field)
+                or name not in type(current).model_fields
+            ):
+                return Unresolved.NO_SUCH_PATH
+
+            owner = type(current)
+            current = getattr(current, name)
+            element = _keyed_element(owner, name)
+
+            for index_text in re.findall(r"\[(\d+)\]", match["indexes"]):
+                if not isinstance(current, list):
+                    return Unresolved.NO_SUCH_PATH
+
+                index = int(index_text)
+                if index >= len(current):
+                    # A positional address past the end of a real list: the path is well
+                    # formed, the row is not there. Same case as a keyed miss — settle it
+                    # with NO_SUCH_ROW when you wire that up.
+                    return Unresolved.NO_SUCH_PATH
+
+                current, element = current[index], None
+
+        if not isinstance(current, Field):
+            return Unresolved.NO_SUCH_PATH
+        return cast(Field[object], current)
