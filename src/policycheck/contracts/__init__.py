@@ -31,6 +31,8 @@ from policycheck.contracts.finding import (
     Finding,
     FindingSide,
     FindingType,
+    NarrationInput,
+    Scalar,
     Severity,
 )
 from policycheck.contracts.manifest import DecoyChange, InjectedChange, Manifest
@@ -81,6 +83,7 @@ __all__ = [
     "InjectedChange",
     "Manifest",
     "Money",
+    "NarrationInput",
     "PageClassification",
     "PolicySnapshot",
     "Premium",
@@ -88,6 +91,7 @@ __all__ = [
     "Property",
     "PropertyLocation",
     "RiskTransfer",
+    "Scalar",
     "Severity",
     "Unresolved",
     "ValuationBasis",

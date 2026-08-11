@@ -1,76 +1,124 @@
 # STATUS
 
-_Last rewritten: 2026-08-03_
+_Last rewritten: 2026-08-10_
 
 ## What works
-- Toolchain installed and green: `uv sync` done, `ruff check` and `pyright` both clean,
-  all deps import.
-- Repo pushed to `github.com/ChrisB2024/policy-checking-agent` (main).
-- `claude.md` filled in: working mode, the "use the thing" gate, repo specifics, scope guards.
-- `README.md` — what documents the corpus needs and where to source them, since the corpus
-  itself is git-ignored.
-- `.spec/plan.md` — module map, ownership, and the C0–C4 chunk sequence.
-- `.spec/modules/*.md` — 13 module specs.
+- Toolchain green: `ruff check` and `ruff format` clean, `pytest` 18 passing.
+  **`pyright` is red — one error**, see "What's half-built".
+- **C0.1 scaffolding** — `claude.md`, `README.md`, `.spec/plan.md`, 13 module specs.
+- **C1.1 corpus tooling** — `pc corpus search/fetch/screen/add/status/quota`. On-disk request
+  ledger enforces the real CourtListener budget (5/min, 50/hr, 125/day), records *before* the
+  request so a failure still counts, and fails closed on a corrupt ledger.
+- **C1.2 `raster`** — `page_image` (content-addressed disk cache), `page_size`, `page_count`,
+  `clear_cache`, and `find_text`, the `source_text → bbox` bridge. 18 tests over reportlab
+  fixtures drawn at known coordinates.
+- **`contracts/enums.py`** and **`contracts/field.py`** — done, no TODOs. `Field[T]`, the
+  `INCLUDED` sentinel, the citation validator, `not_found()`, `needs_review`, `is_cited`,
+  `agreement()`.
+- **`config.py`** — `.env` via pydantic-settings, `SecretStr` credentials, `require_*` helpers
+  that check the secret's *value* so a blank key fails with a useful message rather than a 401.
 
 ## What's half-built
-**C0.2 `contracts`** — scaffolded, awaiting implementation.
+**C0.2 `contracts`** — most of the way there.
 
 | File | State |
 |---|---|
-| `enums.py` | Done. All closed vocabularies from spec §4.2/§4.3. |
-| `field.py` | Scaffold. `TODO(human)`: the `INCLUDED` sentinel, `Field[T]`'s fields, the citation validator, `not_found()`, `needs_review`, `is_cited`, `agreement()`. |
-| `snapshot.py` | `Identity` and `GeneralLiability` written as worked examples. `TODO(human)`: `Address`, `Property`, `PropertyLocation`, `FormRef`, `RiskTransfer`, `Exclusion`, `Premium`, and `field_at()` path resolution. |
-| `finding.py` | Scaffold. `TODO(human)`: the `FindingType` taxonomy (spec §5.2), `FindingSide`, `Finding` fields, section grouping. |
-| `manifest.py` | Scaffold. `TODO(human)`: the `from`/`to` aliasing (`from` is a keyword), `material_changes`. |
-
-Two `# noqa: F401` in `field.py` hold imports the TODOs will use — delete them on implement.
+| `enums.py` | Done. |
+| `field.py` | Done. |
+| `snapshot.py` | All of spec §4.2 plus `field_at` keyed resolution. **2 TODOs:** `_addressable`, and `_match_in` returning `NO_SUCH_ROW`. Currently pyright-red (`keyed` possibly unbound). |
+| `finding.py` | `Severity`, `FindingType` (34 members), `FindingSide` done. **5 TODOs:** `Finding` fields, `for_narration()`, `NarrationInput` fields, `FindingSide.display()`, report section grouping. |
+| `manifest.py` | Scaffold. **3 TODOs:** `from`/`to` aliasing (`from` is a keyword), `material_changes`. |
 
 ## What's blocked on Chris
-- **C1.1 corpus sourcing** is the critical path and it's manual. 15–20 real commercial package
-  policies from CourtListener/RECAP, public entity procurement, and state risk pools. Nothing
-  downstream can be validated without them.
-- Confirming the persistence line in `.spec/modules/persistence.md`: storing extracted
-  `source_text` snippets in Postgres while claiming "documents are processed in memory and
-  discarded." That's defensible but it should be a decision, not a drift.
+- **C1.1 corpus sourcing** — still the critical path, still at zero usable base documents.
+  `cl-2742056.pdf` is downloaded but ruled out as a package fixture (monoline surplus-lines
+  CGL, no property part); retained as a GL-only pair candidate and an extraction fixture
+  (`.spec/fixtures.md`).
+- **Phase 0 user research.** `.spec/policy-check-framework.md` names this as the project's
+  largest open risk: two blanks in the pain sentence are assumptions, not observations. Its
+  recommendation is three account-manager screen shares *before* C2 extraction starts.
+  Contracts work is unaffected — the schema is what you'd bring to the screen share.
 
 ## Decisions made this session
-- **Python 3.13 + uv.** One tool for venv, lockfile, and running. The committed lockfile is
-  what makes "runs offline on a laptop" (spec §9) true.
-- **Pydantic v2** for the data contract. The `Field<T>` envelope in spec §4.1 is a generic
-  model, and validation at the LLM boundary is exactly where the "no bare values" invariant
-  needs enforcing. Also gives the JSON schema for structured extraction for free.
-- **ruff** (lint + format) and **pyright** (types). Pyright because VS Code already runs it via
-  Pylance — the editor and the CLI gate agree instead of showing two different error sets.
-- **SQLAlchemy 2.0 async + Alembic.** Migrations are a real backend skill, and `alembic check`
-  is the "must stay clean" gate in `claude.md`.
-- **pikepdf + reportlab + Pillow** for `pairgen`: patch the real PDF in place rather than
-  regenerate a synthetic one, so renewals keep real carrier layout and scan artifacts.
-- **`claude-opus-5`** for extraction and narration.
-- Deferred, per spec §10: ARQ, pgvector/embeddings.
+- **`Unresolved` enum replaces a bare `None`** from `field_at`. `NO_SUCH_PATH` (broken
+  fixture), `NO_SUCH_ROW` (document legitimately lacks it — what a manifest asserting
+  `to: null` expects), `AMBIGUOUS` (document names one identity twice). Collapsing them makes
+  the eval harness unable to tell a broken fixture from a passing one.
+- **Collection members are addressed by match key, not position.** `forms_schedule.CG0001.edition`
+  resolves by `form_family` — the same key spec §5.1 pairs forms on, because order differs
+  between documents. Each element model declares it once as a `_match_key` ClassVar, read by
+  both `compare` and `field_at`, and it stays out of `model_fields` so it never reaches the
+  extraction schema.
+- **`AMBIGUOUS` on duplicate keys rather than first-match-wins**, following `raster.find_text`:
+  a wrong row is worse than no row. Not an edge case — `.spec/fixtures.md` records a document
+  whose two schedules each omit forms the other lists.
+- **`NarrationInput` is the narrator's only input type.** An uploaded PDF is untrusted input to
+  a language model and `FindingSide.source_text` is a verbatim slice of one, so `narrate()` is
+  typed to reject `Finding` outright. The limit is written down in `.spec/modules/narrate.md`:
+  normalized values can still be document-derived strings, so this narrows exposure rather than
+  eliminating it — the output contract is what contains an injection.
+- **`FindingType` carries 8 members beyond spec §5.2.** Two favorable counterparts the spec
+  never listed despite having a `favorable` severity (`retro_date_receded`,
+  `notice_of_cancellation_increased`); two neutral (`sublimit_added`,
+  `deductible_basis_changed`, `endorsement_added`); and four *about the tool, not the policy*
+  (`low_confidence_field`, `field_not_found`, `ambiguous_path`, `normalizer_version_mismatch`).
+  That last group is a category §5.2 doesn't have, and `report` should group it separately — an
+  AM reading "normalizer version mismatch" is being told something about the run, not about
+  their client's coverage.
+- **Enum values are an interface.** Manifests address finding types by string, so members match
+  §5.2 exactly (`limit_decrease`, not `limit_decreased`). Four had drifted and were renamed.
+- Earlier and unchanged: Python 3.13 + uv with a committed lockfile, Pydantic v2, ruff +
+  pyright, SQLAlchemy 2.0 async + Alembic, pikepdf/reportlab/Pillow for `pairgen`,
+  `claude-opus-5` for extraction and narration. Deferred per spec §10: ARQ, pgvector.
 
-## Open problem worth reading before Phase 1
-**The Claude API returns no bounding boxes for PDF content**, but spec §4.1 requires a `bbox`
-per field and §9 requires bbox highlighting. Plan: the model returns verbatim `source_text` +
-`page`, and `raster.find_text` resolves that string against the page's text layer. Scanned
-pages have no text layer and degrade to `bbox: null` + page-level highlight.
+## Spec edits owed
+Found by diffing the spec against the models. None are §2 invariants; all are §3.2/§5.1/§5.2
+detail that the code has since outgrown.
 
-Related: the API's native `citations` feature is incompatible with structured output (returns
-400), so citations come from the extraction schema, not the API feature.
+1. **§3.2's example `field_path`s don't resolve.** §4.2 (the schema authority) says
+   `general_liability.each_occurrence` and `forms_schedule`; §3.2's manifest says
+   `gl.each_occurrence_limit` and `forms`. Fix §3.2 — three of its six paths are wrong.
+2. **`endorsements.CG2010`** should be `risk_transfer.additional_insured.present`. §5.2 defines
+   `endorsement_removed` as "AI, WOS, or P&NC present prior, absent now", so the assertion is
+   about `risk_transfer`, and pointing it there makes it a real stored `Field`.
+3. **§5.1 names five types §5.2 gives no severity to:** `form_added`, `form_removed`,
+   `location_added`, `ai_party_added`, `ai_party_removed`. `compare` is told to emit them and
+   `FindingType` has no members for them. Resolve before writing `compare/rules.py`.
+4. **Record the 8 `FindingType` additions** in §5.2.
 
-Both are written up in `.spec/modules/raster.md` and `.spec/modules/extract.md`. The bbox path
-should be proven on a real scanned PDF early in Phase 1 rather than discovered at an event.
+## Open problems
+- **`derived` on `FindingSide` contradicts `compare.md`.** A derived value (a premium delta, a
+  structural observation like blanket-to-scheduled) carries no page and no snippet, but
+  `compare.md` says every finding carries both sides' `page` + `source_text` so a human can
+  verify in 90 seconds. Worth considering `derived_from: tuple[str, ...]` of field paths, which
+  keeps invariant 7 intact transitively and makes the flag self-documenting.
+- **`Address` still asks the extractor for `match_key`.** All seven fields are in the JSON
+  schema's `required` list, including the one `normalize` owns — the same bug class as
+  `confidence` on `Field`, already fixed there. Also needs an explicit *unnormalized* marker
+  rather than a bare null, per the framework doc's Phase 2 note.
+- **`WaiverOfSubrogation.basis` is typed `AIBasis`.** Correct vocabulary (spec gives waivers the
+  same `blanket|scheduled|none`), wrong name. Rename to something shared.
+- **`normalizer_version` doesn't exist.** The framework doc asserts it's already on
+  `DocumentMeta`; it isn't. The field is the easy half — the point is the comparator refusing
+  to compare snapshots normalized under different versions.
+- **`contracts` has no tests.** `tests/contracts/` is an empty package. `agreement()` is the
+  rule the entire dual-pass cost is justified by and depends on `IncludedSentinel.__eq__`
+  three hundred lines away. A test parsing §5.2 out of `spec.md` and asserting `FindingType`
+  covers it would have caught the drift above mechanically.
+- **Bounding boxes (unchanged).** The Claude API returns none, so `find_text` resolves
+  `source_text` against the page text layer. Settled empirically: text at a known position
+  resolves to within a point; an ambiguous needle returns `None`; a real scanned RECAP page has
+  66 raw chars and no text layer. For the ≥2 image-only pairs spec §3.2 requires, page-level
+  highlighting is the guaranteed path, not a fallback. The API's native `citations` feature is
+  incompatible with structured output (400), so citations come from the schema.
 
 ## Next
-1. **Chris — fill in the `contracts` TODOs.** Suggested order: `field.py` first (everything
-   else depends on `Field[T]`), then `snapshot.py`, then `finding.py` and `manifest.py`.
-   Then Claude reviews and strips the TODO recipes.
-2. **Chris — C1.1 corpus, in parallel.** The long pole. Sourcing 15–20 real policies is slow,
-   manual work and nothing downstream can be validated without it. See `README.md`.
-3. Then C1.2 `raster` (Claude) — and prove the `source_text → bbox` path on a real scanned
-   PDF early, per the open problem above.
+1. **Chris — finish `snapshot.py`.** `_addressable` and `NO_SUCH_ROW`; `main` is pyright-red
+   until then.
+2. **Chris — `finding.py` and `manifest.py`**, then contracts is done and C0.2 closes.
+3. **Spec edits owed**, above. Item 3 blocks `compare/rules.py`.
+4. **C1.1 corpus, in parallel.** The long pole; nothing downstream can be validated without it.
+5. **Three screen shares before C2 extraction**, per the framework doc.
 
 Schema freeze: once the extractor exists (C1.4), a change to `contracts` means re-running the
 full eval suite and noting it here.
-
-Phase 4 (the LinkedIn conversations) does not wait for Phase 3, and per spec §14 it needs a
-date or it doesn't happen.
