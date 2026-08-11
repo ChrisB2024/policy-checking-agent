@@ -1,10 +1,9 @@
 # STATUS
 
-_Last rewritten: 2026-08-10_
+_Last rewritten: 2026-08-11_
 
 ## What works
-- Toolchain green: `ruff check` and `ruff format` clean, `pytest` 18 passing.
-  **`pyright` is red — one error**, see "What's half-built".
+- Toolchain green: `ruff check`, `ruff format`, `pyright` (0 errors), `pytest` 18 passing.
 - **C0.1 scaffolding** — `claude.md`, `README.md`, `.spec/plan.md`, 13 module specs.
 - **C1.1 corpus tooling** — `pc corpus search/fetch/screen/add/status/quota`. On-disk request
   ledger enforces the real CourtListener budget (5/min, 50/hr, 125/day), records *before* the
@@ -12,20 +11,23 @@ _Last rewritten: 2026-08-10_
 - **C1.2 `raster`** — `page_image` (content-addressed disk cache), `page_size`, `page_count`,
   `clear_cache`, and `find_text`, the `source_text → bbox` bridge. 18 tests over reportlab
   fixtures drawn at known coordinates.
-- **`contracts/enums.py`** and **`contracts/field.py`** — done, no TODOs. `Field[T]`, the
-  `INCLUDED` sentinel, the citation validator, `not_found()`, `needs_review`, `is_cited`,
-  `agreement()`.
+- **`contracts/enums.py`**, **`contracts/field.py`**, **`contracts/snapshot.py`** — done, no
+  TODOs. `Field[T]`, the `INCLUDED` sentinel, the citation validator, `not_found()`,
+  `needs_review`, `is_cited`, `agreement()`; every section of spec §4.2; and `field_at`,
+  which resolves all six of spec §3.2's manifest paths once they're corrected to §4.2's
+  names — by position *and* by match key, with `Unresolved` separating a broken fixture from
+  an absent row from an ambiguous one.
 - **`config.py`** — `.env` via pydantic-settings, `SecretStr` credentials, `require_*` helpers
   that check the secret's *value* so a blank key fails with a useful message rather than a 401.
 
 ## What's half-built
-**C0.2 `contracts`** — most of the way there.
+**C0.2 `contracts`** — two files left, 8 TODOs.
 
 | File | State |
 |---|---|
 | `enums.py` | Done. |
 | `field.py` | Done. |
-| `snapshot.py` | All of spec §4.2 plus `field_at` keyed resolution. **2 TODOs:** `_addressable`, and `_match_in` returning `NO_SUCH_ROW`. Currently pyright-red (`keyed` possibly unbound). |
+| `snapshot.py` | Done. |
 | `finding.py` | `Severity`, `FindingType` (34 members), `FindingSide` done. **5 TODOs:** `Finding` fields, `for_narration()`, `NarrationInput` fields, `FindingSide.display()`, report section grouping. |
 | `manifest.py` | Scaffold. **3 TODOs:** `from`/`to` aliasing (`from` is a keyword), `material_changes`. |
 
@@ -52,6 +54,15 @@ _Last rewritten: 2026-08-10_
 - **`AMBIGUOUS` on duplicate keys rather than first-match-wins**, following `raster.find_text`:
   a wrong row is worse than no row. Not an edge case — `.spec/fixtures.md` records a document
   whose two schedules each omit forms the other lists.
+- **A row miss is only `NO_SUCH_ROW` if the rest of the path could have resolved.**
+  `_addressable` walks the remaining segments against `model_fields` rather than values, so a
+  path that is broken twice over (`forms_schedule.CG9999.nonsense`) reports `NO_SUCH_PATH`
+  instead of reading as a passing absence. That is the shape stale fixtures take after a form
+  family is renamed or the canonicalizer's output drifts — they would all go quietly green.
+  Wired into positional addressing too, since `property.locations[0].valuation` is a §3.2 path
+  and the two modes must not disagree about the same absent row. Lists whose members carry no
+  identity (`dba: list[Field[str]]`) have no type to check a tail against and report the
+  absence unqualified.
 - **`NarrationInput` is the narrator's only input type.** An uploaded PDF is untrusted input to
   a language model and `FindingSide.source_text` is a verbatim slice of one, so `narrate()` is
   typed to reject `Finding` outright. The limit is written down in `.spec/modules/narrate.md`:
@@ -113,12 +124,17 @@ detail that the code has since outgrown.
   incompatible with structured output (400), so citations come from the schema.
 
 ## Next
-1. **Chris — finish `snapshot.py`.** `_addressable` and `NO_SUCH_ROW`; `main` is pyright-red
-   until then.
-2. **Chris — `finding.py` and `manifest.py`**, then contracts is done and C0.2 closes.
-3. **Spec edits owed**, above. Item 3 blocks `compare/rules.py`.
-4. **C1.1 corpus, in parallel.** The long pole; nothing downstream can be validated without it.
-5. **Three screen shares before C2 extraction**, per the framework doc.
+1. **Chris — `finding.py` and `manifest.py`.** 8 TODOs, then C0.2 closes. Three decisions are
+   tangled in `finding.py` and want settling before `Finding` gets its fields: whether
+   `derived` carries `derived_from` paths, whether `Unresolved` is the right vocabulary for
+   side-absence, and what `NarrationInput` withholds.
+2. **Spec edits owed**, above. Item 3 blocks `compare/rules.py`.
+3. **C1.1 corpus, in parallel.** The long pole; nothing downstream can be validated without it.
+4. **Three screen shares before C2 extraction**, per the framework doc.
+
+Finishing contracts does not unblock much on its own — `pairgen` and `extract` both need real
+documents, and there are none. Of the four above, the corpus is the one that has been at zero
+longest and gates the most.
 
 Schema freeze: once the extractor exists (C1.4), a change to `contracts` means re-running the
 full eval suite and noting it here.
