@@ -5,11 +5,16 @@ produce the renewal PDF; `evals` reads the same manifest to score what the pipel
 Neither writes back to it.
 """
 
-from pydantic import BaseModel, ConfigDict
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from policycheck.contracts.finding import FindingType, Severity
 
-_FROZEN = ConfigDict(frozen=True)
+# `populate_by_name` because two fields alias to `from` and `to`: JSON uses the spec's keys,
+# Python uses `from_value` / `to_value`. Without it these models are unconstructible in
+# Python — `from=` is a keyword, so even the alias spelling is a syntax error.
+_FROZEN = ConfigDict(frozen=True, populate_by_name=True)
 
 
 class InjectedChange(BaseModel):
@@ -19,10 +24,11 @@ class InjectedChange(BaseModel):
 
     change_id: str
     field_path: str
-    # TODO(human): from_value / to_value. Note the JSON keys in spec §3.2 are "from" and
-    # "to" — `from` is a Python keyword, so alias them (`alias="from"`) and enable
-    # populate_by_name. Type them loosely (object | None): a manifest change can target an
-    # int limit, a string edition, or an enum valuation.
+    # Loosely typed on purpose: a change can target an int limit, a string edition, or an
+    # enum valuation. Narrowing this would mean duplicating `Scalar` here and keeping the
+    # two in step, and a manifest is hand-authored ground truth rather than pipeline output.
+    from_value: object | None = Field(alias="from")
+    to_value: object | None = Field(alias="to")
     expected_severity: Severity
     expected_finding_type: FindingType
 
@@ -38,8 +44,16 @@ class DecoyChange(BaseModel):
     model_config = _FROZEN
 
     field_path: str
-    # TODO(human): from_value / to_value (same aliasing as above), expected_severity
-    # (informational or suppressed)
+    from_value: object | None = Field(alias="from")
+    to_value: object | None = Field(alias="to")
+    expected_severity: Literal[Severity.INFORMATIONAL, Severity.SUPPRESSED]
+    """Narrowed to the two legal outcomes, not `Severity`.
+
+    A decoy expecting `material_adverse` is a manifest asserting the opposite of what makes
+    it a decoy, and the harness would score against it faithfully — the 100% suppression gate
+    would still read as passing while measuring nothing. The type is the enforcement because
+    manifests are hand-authored.
+    """
 
 
 class Manifest(BaseModel):
@@ -49,10 +63,17 @@ class Manifest(BaseModel):
     base_document: str
     renewal_document: str
     line_of_business: str
-    injected_changes: list[InjectedChange]
-    decoy_changes: list[DecoyChange] = []
+    # Tuples, not lists: `frozen=True` stops attribute assignment but not mutation in place,
+    # and a list would let `manifest.injected_changes.append(...)` succeed on ground truth
+    # the module docstring says is never written back to — accepting objects that were never
+    # validated, since validation ran at construction.
+    injected_changes: tuple[InjectedChange, ...]
+    decoy_changes: tuple[DecoyChange, ...] = ()
 
-    # TODO(human): a `material_changes` property returning only the injected changes with
-    # expected_severity == MATERIAL_ADVERSE. Material recall is the 100% gate and the
-    # metric that decides whether the product lives — give it its own accessor rather than
-    # filtering inline at each call site.
+    @property
+    def material_changes(self) -> tuple[InjectedChange, ...]:
+        """Injected changes that must be found - the 100% recall gate"""
+        return tuple(
+            c for c in self.injected_changes
+            if c.expected_severity is Severity.MATERIAL_ADVERSE
+        )
