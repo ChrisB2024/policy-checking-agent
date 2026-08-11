@@ -29,7 +29,7 @@ from policycheck.contracts.enums import (
 from policycheck.contracts.field import Field, Money
 
 # Every model here is frozen: the pipeline builds new objects rather than mutating.
-_FROZEN = ConfigDict(frozen=True)
+_FROZEN = ConfigDict(frozen=True, extra="forbid")
 
 
 class Address(BaseModel):

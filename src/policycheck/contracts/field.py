@@ -147,7 +147,7 @@ class Field[T](BaseModel):
     it. Gating on `confidence` would reject that shape.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     # The descriptions below are not documentation. This model becomes the JSON schema the
     # extractor is constrained to, so each one is prompt surface the model actually reads —

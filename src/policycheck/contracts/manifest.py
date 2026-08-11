@@ -14,7 +14,7 @@ from policycheck.contracts.finding import FindingType, Severity
 # `populate_by_name` because two fields alias to `from` and `to`: JSON uses the spec's keys,
 # Python uses `from_value` / `to_value`. Without it these models are unconstructible in
 # Python — `from=` is a keyword, so even the alias spelling is a syntax error.
-_FROZEN = ConfigDict(frozen=True, populate_by_name=True)
+_FROZEN = ConfigDict(frozen=True, populate_by_name=True, extra="forbid")
 
 
 class InjectedChange(BaseModel):

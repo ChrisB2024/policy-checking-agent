@@ -77,7 +77,7 @@ For each base document, produce a renewal variant by applying a manifest of cont
   "injected_changes": [
     {
       "change_id": "c1",
-      "field_path": "gl.each_occurrence_limit",
+      "field_path": "general_liability.each_occurrence",
       "from": 1000000,
       "to": 500000,
       "expected_severity": "material_adverse",
@@ -85,15 +85,15 @@ For each base document, produce a renewal variant by applying a manifest of cont
     },
     {
       "change_id": "c2",
-      "field_path": "endorsements.CG2010",
-      "from": "blanket_additional_insured",
-      "to": null,
+      "field_path": "risk_transfer.additional_insured.basis",
+      "from": "blanket",
+      "to": "none",
       "expected_severity": "material_adverse",
       "expected_finding_type": "endorsement_removed"
     },
     {
       "change_id": "c3",
-      "field_path": "forms.CG0001.edition",
+      "field_path": "forms_schedule.CG0001.edition",
       "from": "04/13",
       "to": "12/07",
       "expected_severity": "review_required",
@@ -283,7 +283,7 @@ Before comparing, entities on each side must be paired:
 | Entity | Match key | Unmatched handling |
 |---|---|---|
 | Coverage limits | Field path (fixed schema) | `not_found` on one side → finding |
-| Forms | `form_family` | Present on one side only → `form_added` / `form_removed` |
+| Forms | `form_family` | Present on one side only → classified by what the form is: `exclusion_added` / `exclusion_removed`, `endorsement_added` / `endorsement_removed`, else `form_added_unclassified` |
 | Property locations | Normalized address, fallback to location number | Unmatched → `location_added` / `location_removed` |
 | Scheduled AI parties | Normalized party name | Unmatched → `ai_party_added` / `ai_party_removed` |
 | Exclusions | `form_family` | Present on renewal only → `exclusion_added` |
@@ -302,6 +302,7 @@ Location matching by address rather than location number matters — carriers re
 | `endorsement_removed` | AI, WOS, or P&NC present prior, absent now | material_adverse |
 | `ai_basis_narrowed` | Blanket → scheduled | material_adverse |
 | `ai_scope_narrowed` | Both → ongoing ops only | material_adverse |
+| `ai_party_removed` | Scheduled AI party on prior only | material_adverse |
 | `valuation_downgrade` | Replacement cost → ACV or functional | material_adverse |
 | `causes_of_loss_narrowed` | Special → broad → basic | material_adverse |
 | `coinsurance_increase` | Coinsurance % higher | material_adverse |
@@ -312,14 +313,29 @@ Location matching by address rather than location number matters — carriers re
 | `form_edition_change` | Same family, different edition | **review_required** |
 | `form_added_unclassified` | New form not in known taxonomy | **review_required** |
 | `location_removed` | Location on prior only | review_required |
-| `low_confidence_field` | Either side extracted at `low` | **needs_review** |
+| `sublimit_added` | Sublimit present where none prior | review_required |
+| `deductible_basis_changed` | Per-occurrence ↔ per-claim | review_required |
+| `endorsement_added` | AI, WOS, or P&NC present now, absent prior | review_required |
 | `limit_increase` | Any limit higher | favorable |
 | `exclusion_removed` | Restricting form dropped | favorable |
 | `deductible_decrease` | Deductible lower | favorable |
+| `retro_date_receded` | Retro date earlier than prior | favorable |
+| `notice_of_cancellation_increased` | More days | favorable |
 | `carrier_change` | Different carrier | informational |
 | `premium_change` | Premium delta | informational |
 | `address_change` | Mailing address differs | informational |
+| `location_added` | Location on renewal only | informational |
+| `ai_party_added` | Scheduled AI party on renewal only | informational |
 | `policy_number_change` | Expected at renewal | suppressed |
+
+**Findings about the run, not the policy.** These describe what the tool could and could not do. `report` groups them apart from coverage findings — an account manager reading "normalizer version mismatch" is being told something about the run, not about their client's coverage — and `narrate` skips them entirely.
+
+| Finding type | Trigger | Severity |
+|---|---|---|
+| `low_confidence_field` | Either side extracted at `low` | **needs_review** |
+| `field_not_found` | Field absent from a document that should carry it | needs_review |
+| `ambiguous_path` | A field path resolves to more than one row | needs_review |
+| `normalizer_version_mismatch` | Snapshots normalized under different versions | needs_review |
 
 **Form edition changes are `review_required`, never auto-classified.** Edition rollbacks frequently narrow coverage and edition advances frequently broaden it, but the direction is form-specific and cannot be inferred from the date. This finding says *"this changed, read it"* — which is the correct and defensible output.
 

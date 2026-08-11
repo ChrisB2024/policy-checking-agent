@@ -1,9 +1,9 @@
 # STATUS
 
-_Last rewritten: 2026-08-11_
+_Last rewritten: 2026-08-12_
 
 ## What works
-- Toolchain green: `ruff check`, `ruff format`, `pyright` (0 errors), `pytest` 18 passing.
+- Toolchain green: `ruff check`, `ruff format`, `pyright` (0 errors), `pytest` 97 passing.
 - **C0.1 scaffolding** — `claude.md`, `README.md`, `.spec/plan.md`, 13 module specs.
 - **C1.1 corpus tooling** — `pc corpus search/fetch/screen/add/status/quota`. On-disk request
   ledger enforces the real CourtListener budget (5/min, 50/hr, 125/day), records *before* the
@@ -11,25 +11,18 @@ _Last rewritten: 2026-08-11_
 - **C1.2 `raster`** — `page_image` (content-addressed disk cache), `page_size`, `page_count`,
   `clear_cache`, and `find_text`, the `source_text → bbox` bridge. 18 tests over reportlab
   fixtures drawn at known coordinates.
-- **`contracts/enums.py`**, **`contracts/field.py`**, **`contracts/snapshot.py`** — done, no
-  TODOs. `Field[T]`, the `INCLUDED` sentinel, the citation validator, `not_found()`,
+- **C0.2 `contracts` — complete.** No `TODO(human)` in any of the five files, and 97 tests
+  under `tests/`. `Field[T]`, the `INCLUDED` sentinel, the citation validator, `not_found()`,
   `needs_review`, `is_cited`, `agreement()`; every section of spec §4.2; and `field_at`,
-  which resolves all six of spec §3.2's manifest paths once they're corrected to §4.2's
-  names — by position *and* by match key, with `Unresolved` separating a broken fixture from
-  an absent row from an ambiguous one.
+  which resolves every one of spec §3.2's manifest paths — by position *and* by match key,
+  with `Unresolved` separating a broken fixture from an absent row from an ambiguous one.
+  `finding.py` carries `Finding`, `FindingSide`, `Unit`, `NarrationInput` / `NarrationSide`,
+  and `ComparisonResult.sections()`; `manifest.py` parses spec §3.2's own example.
 - **`config.py`** — `.env` via pydantic-settings, `SecretStr` credentials, `require_*` helpers
   that check the secret's *value* so a blank key fails with a useful message rather than a 401.
 
 ## What's half-built
-**C0.2 `contracts`** — two files left, 8 TODOs.
-
-| File | State |
-|---|---|
-| `enums.py` | Done. |
-| `field.py` | Done. |
-| `snapshot.py` | Done. |
-| `finding.py` | `Severity`, `FindingType` (34 members), `FindingSide` done. **5 TODOs:** `Finding` fields, `for_narration()`, `NarrationInput` fields, `FindingSide.display()`, report section grouping. |
-| `manifest.py` | Scaffold. **3 TODOs:** `from`/`to` aliasing (`from` is a keyword), `material_changes`. |
+Nothing in `contracts`. The next chunk (C1.3 `pairgen`) has not started.
 
 ## What's blocked on Chris
 - **C1.1 corpus sourcing** — still the critical path, still at zero usable base documents.
@@ -68,14 +61,15 @@ _Last rewritten: 2026-08-11_
   typed to reject `Finding` outright. The limit is written down in `.spec/modules/narrate.md`:
   normalized values can still be document-derived strings, so this narrows exposure rather than
   eliminating it — the output contract is what contains an injection.
-- **`FindingType` carries 8 members beyond spec §5.2.** Two favorable counterparts the spec
-  never listed despite having a `favorable` severity (`retro_date_receded`,
-  `notice_of_cancellation_increased`); two neutral (`sublimit_added`,
-  `deductible_basis_changed`, `endorsement_added`); and four *about the tool, not the policy*
-  (`low_confidence_field`, `field_not_found`, `ambiguous_path`, `normalizer_version_mismatch`).
-  That last group is a category §5.2 doesn't have, and `report` should group it separately — an
-  AM reading "normalizer version mismatch" is being told something about the run, not about
-  their client's coverage.
+- **Findings about the run are their own category.** `low_confidence_field`,
+  `field_not_found`, `ambiguous_path`, `normalizer_version_mismatch` describe what the tool
+  could and could not do, not the policy. `TOOL_FINDINGS` declares the set once; `report`
+  groups them apart and `narrate` skips them. Now a second table in §5.2.
+- **Tool findings and suppressed findings are not narrated.** §7.1 gives neither a place where
+  a narrative renders — the needs-review section is a fixed heading and a count, and suppressed
+  has no section at all. Paying a model to phrase them buys prose nothing displays, and for
+  tool findings it risks copy about the tool's own confusion reaching a client. `for_narration`
+  returns `None` for both, so the rule lives beside the projection rather than in `narrate`.
 - **Enum values are an interface.** Manifests address finding types by string, so members match
   §5.2 exactly (`limit_decrease`, not `limit_decreased`). Four had drifted and were renamed.
 - **`FindingSide.value` is a narrow union, and absence is its own field.** Findings round-trip
@@ -95,7 +89,11 @@ _Last rewritten: 2026-08-11_
 - **Suppressed findings are built and filtered at render**, not skipped. A decoy expecting
   `suppressed` must be emitted to be scored, or the harness cannot tell "correctly suppressed"
   from "never noticed" — and that is a 100% gate (spec §8). It is also the diligence record an
-  E&O defence rests on. The section helper returns five groups; `SUPPRESSED` appears in none.
+  E&O defence rests on. `sections()` returns five groups; `SUPPRESSED` appears in none and is
+  reachable via `ComparisonResult.suppressed`.
+- **`extra="forbid"` on every contracts model.** Pydantic silently drops an unknown key, so a
+  field renamed in code turns every persisted record and hand-authored manifest into one that
+  loads with a default and no complaint. A typo'd `feild_path` now fails at construction.
 - **`address_change` fires on `match_key`, and the side carries the normalized rendering.**
   `STE 200` vs `Suite 200` is not a change, and rendering `raw` would show one — a false
   positive against a ≤1 per pair gate. `source_text` still carries the printed line.
@@ -103,27 +101,27 @@ _Last rewritten: 2026-08-11_
   pyright, SQLAlchemy 2.0 async + Alembic, pikepdf/reportlab/Pillow for `pairgen`,
   `claude-opus-5` for extraction and narration. Deferred per spec §10: ARQ, pgvector.
 
-## Spec edits owed
-Found by diffing the spec against the models. None are §2 invariants; all are §3.2/§5.1/§5.2
-detail that the code has since outgrown.
+## Spec edits done
+The spec and the models had drifted apart; the spec is now the single source and a test
+enforces it (`tests/contracts/test_taxonomy.py` parses §5.2 rather than restating it).
 
-1. **§3.2's example `field_path`s don't resolve.** §4.2 (the schema authority) says
-   `general_liability.each_occurrence` and `forms_schedule`; §3.2's manifest says
-   `gl.each_occurrence_limit` and `forms`. Fix §3.2 — three of its six paths are wrong.
-2. **`endorsements.CG2010`** should be `risk_transfer.additional_insured.present`. §5.2 defines
-   `endorsement_removed` as "AI, WOS, or P&NC present prior, absent now", so the assertion is
-   about `risk_transfer`, and pointing it there makes it a real stored `Field`.
-3. **§5.1 names five types §5.2 gives no severity to:** `form_added`, `form_removed`,
-   `location_added`, `ai_party_added`, `ai_party_removed`. `compare` is told to emit them and
-   `FindingType` has no members for them. Resolve before writing `compare/rules.py`.
-4. **Record the 8 `FindingType` additions** in §5.2.
+1. **§3.2's example `field_path`s now resolve.** `gl.each_occurrence_limit` →
+   `general_liability.each_occurrence`, `forms.CG0001.edition` → `forms_schedule.CG0001.edition`.
+   §4.2 is the schema authority and §3.2 was loose.
+2. **`endorsements.CG2010` → `risk_transfer.additional_insured.basis`** (`blanket` → `none`).
+   §5.2 defines `endorsement_removed` on AI/WOS/P&NC, so the assertion is about
+   `risk_transfer`, and pointing it there makes it a real stored `Field`.
+3. **§5.1's five unmapped names resolved.** Three were never finding types — a form present on
+   one side is *classified* by what it is (`exclusion_added`, `endorsement_removed`, else
+   `form_added_unclassified`), so §5.1 now says that. Two were genuinely missing and are now
+   types with severities: `ai_party_removed` (material_adverse — a scheduled party losing AI
+   status is exactly the §5.2 kind of harm) and `ai_party_added` (informational). Same for
+   `location_added` (informational), which §5.1 named and §5.2 omitted.
+4. **The 8 additions are recorded in §5.2**, including a second table for findings about the
+   run rather than the policy. §5.2 now has 37 rows and `FindingType` has 37 members, with no
+   drift in either direction.
 
 ## Open problems
-- **`derived` on `FindingSide` contradicts `compare.md`.** A derived value (a premium delta, a
-  structural observation like blanket-to-scheduled) carries no page and no snippet, but
-  `compare.md` says every finding carries both sides' `page` + `source_text` so a human can
-  verify in 90 seconds. Worth considering `derived_from: tuple[str, ...]` of field paths, which
-  keeps invariant 7 intact transitively and makes the flag self-documenting.
 - **`Address` still asks the extractor for `match_key`.** All seven fields are in the JSON
   schema's `required` list, including the one `normalize` owns — the same bug class as
   `confidence` on `Field`, already fixed there. Also needs an explicit *unnormalized* marker
@@ -133,10 +131,6 @@ detail that the code has since outgrown.
 - **`normalizer_version` doesn't exist.** The framework doc asserts it's already on
   `DocumentMeta`; it isn't. The field is the easy half — the point is the comparator refusing
   to compare snapshots normalized under different versions.
-- **`contracts` has no tests.** `tests/contracts/` is an empty package. `agreement()` is the
-  rule the entire dual-pass cost is justified by and depends on `IncludedSentinel.__eq__`
-  three hundred lines away. A test parsing §5.2 out of `spec.md` and asserting `FindingType`
-  covers it would have caught the drift above mechanically.
 - **Bounding boxes (unchanged).** The Claude API returns none, so `find_text` resolves
   `source_text` against the page text layer. Settled empirically: text at a known position
   resolves to within a point; an ambiguous needle returns `None`; a real scanned RECAP page has
@@ -145,17 +139,11 @@ detail that the code has since outgrown.
   incompatible with structured output (400), so citations come from the schema.
 
 ## Next
-1. **Chris — `finding.py` and `manifest.py`.** 8 TODOs, then C0.2 closes. Three decisions are
-   tangled in `finding.py` and want settling before `Finding` gets its fields: whether
-   `derived` carries `derived_from` paths, whether `Unresolved` is the right vocabulary for
-   side-absence, and what `NarrationInput` withholds.
-2. **Spec edits owed**, above. Item 3 blocks `compare/rules.py`.
-3. **C1.1 corpus, in parallel.** The long pole; nothing downstream can be validated without it.
-4. **Three screen shares before C2 extraction**, per the framework doc.
+1. **C1.1 corpus.** The long pole, still at zero usable base documents, and now the only thing
+   between here and C1.3 — `pairgen` needs real PDFs to patch, and `extract` needs pairs.
+2. **Three screen shares before C2 extraction**, per `.spec/policy-check-framework.md`. The
+   schema is finished, which is what you'd bring to one.
+3. **C1.3 `pairgen`** (Claude's to write, per `.spec/plan.md`) once documents exist.
 
-Finishing contracts does not unblock much on its own — `pairgen` and `extract` both need real
-documents, and there are none. Of the four above, the corpus is the one that has been at zero
-longest and gates the most.
-
-Schema freeze: once the extractor exists (C1.4), a change to `contracts` means re-running the
-full eval suite and noting it here.
+Schema freeze: the extractor doesn't exist yet, so `contracts` is still cheap to change. After
+C1.4 a change means re-running the full eval suite and noting it here.

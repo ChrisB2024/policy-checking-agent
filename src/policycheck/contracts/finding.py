@@ -15,6 +15,12 @@ from policycheck.contracts.enums import Confidence
 from policycheck.contracts.field import BBox, IncludedSentinel
 from policycheck.contracts.snapshot import Unresolved
 
+# `extra="forbid"` because these models are read back from persisted JSON and from
+# hand-authored manifests. Pydantic's default silently drops an unknown key, so a field
+# renamed in the code turns every stored record into one that loads with a default and no
+# complaint — the exact drift the eval harness would then score against.
+_FROZEN = ConfigDict(frozen=True, extra="forbid")
+
 
 class Severity(StrEnum):
     NEEDS_REVIEW = "needs_review"
@@ -61,6 +67,7 @@ class FindingType(StrEnum):
     BLANKET_TO_SCHEDULED = "blanket_to_scheduled"
     BUSINESS_INCOME_REDUCED = "business_income_reduced"
     LOCATION_REMOVED = "location_removed"
+    LOCATION_ADDED = "location_added"
 
     # --- forms, endorsements, exclusions ---
     FORM_EDITION_CHANGE = "form_edition_change"
@@ -73,6 +80,8 @@ class FindingType(StrEnum):
     # --- risk transfer ---
     AI_BASIS_NARROWED = "ai_basis_narrowed"
     AI_SCOPE_NARROWED = "ai_scope_narrowed"
+    AI_PARTY_ADDED = "ai_party_added"
+    AI_PARTY_REMOVED = "ai_party_removed"
 
     # --- dates, triggers, notice ---
     RETRO_DATE_ADVANCED = "retro_date_advanced"
@@ -88,9 +97,8 @@ class FindingType(StrEnum):
     ADDRESS_CHANGE = "address_change"
     POLICY_NUMBER_CHANGE = "policy_number_change"
 
-    # --- about the tool, not the policy. `report` groups these separately: an AM reading
-    # "normalizer version mismatch" is being told something about the run, not about their
-    # client's coverage. Not in spec §5.2 — recorded as an addition in STATUS.md.
+    # --- about the tool, not the policy (spec §5.2, second table). `report` groups these
+    # apart and `narrate` skips them; see `TOOL_FINDINGS`.
     LOW_CONFIDENCE_FIELD = "low_confidence_field"
     FIELD_NOT_FOUND = "field_not_found"
     AMBIGUOUS_PATH = "ambiguous_path"
@@ -188,7 +196,7 @@ class FindingSide(BaseModel):
     absent side.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = _FROZEN
 
     value: Scalar | None = None
     absent: Unresolved | None = None
@@ -336,7 +344,7 @@ class FindingSide(BaseModel):
 class Finding(BaseModel):
     """A single ruled difference between two snapshots (spec §5.3)."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = _FROZEN
 
     finding_id: str = PydanticField(min_length=1)
     """Narration's output contract keys on this (`{finding_id: narrative}` validated against
@@ -384,13 +392,17 @@ class Finding(BaseModel):
         a field added to `Finding` or `FindingSide` would reach the narrator unless someone
         remembered to exclude it, and forgetting is silent.
 
-        `TOOL_FINDINGS` return `None`. Their sides can be absent for reasons that are facts
-        about the run — a path that resolves nowhere, a document naming one identity twice —
-        and those have no client-facing sentence. Deciding it here rather than at the call
-        site keeps "what may be narrated" in the same place as "what the narrator sees";
-        `narrate()` would otherwise re-derive it, and the two would drift.
+        Two kinds return `None`. `TOOL_FINDINGS`, whose sides can be absent for reasons that
+        are facts about the run — a path that resolves nowhere, a document naming one identity
+        twice — and which have no client-facing sentence. And `SUPPRESSED` findings, which
+        §7.1 gives no section: narrating one buys prose nothing renders, at model cost, on the
+        finding type most likely to be noise.
+
+        Deciding it here rather than at the call site keeps "what may be narrated" in the same
+        place as "what the narrator sees"; `narrate()` would otherwise re-derive it and the
+        two would drift.
         """
-        if self.type in TOOL_FINDINGS:
+        if self.type in TOOL_FINDINGS or self.severity is Severity.SUPPRESSED:
             return None
         prior = self.prior.for_narration()
         current = self.current.for_narration()
@@ -421,7 +433,7 @@ class NarrationSide(BaseModel):
     convention `narrate` has to remember.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = _FROZEN
 
     display: str | None = PydanticField(default=None, min_length=1)
     absent: Literal[Unresolved.NO_SUCH_ROW] | None = None
@@ -455,7 +467,7 @@ class NarrationInput(BaseModel):
     corrupt wording but cannot add a finding, drop one, or change a severity.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = _FROZEN
 
     finding_id: str
     type: FindingType
@@ -492,7 +504,7 @@ class Section(BaseModel):
     render a full-looking report.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = _FROZEN
 
     severity: Severity
     heading: str
@@ -509,7 +521,7 @@ class Section(BaseModel):
 class ComparisonResult(BaseModel):
     """Everything one comparison run produces."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = _FROZEN
 
     findings: tuple[Finding, ...]
     """`tuple`, not `list`: `frozen=True` stops reassignment but not `result.findings.append`.

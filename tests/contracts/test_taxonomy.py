@@ -50,27 +50,23 @@ def test_spec_type_exists_in_enum(name: str, severity: str) -> None:
     )
 
 
-def test_additions_beyond_the_spec_are_deliberate() -> None:
-    """Members the spec doesn't list are allowed, but each is a recorded decision.
+def test_enum_carries_nothing_the_spec_does_not_list() -> None:
+    """The spec is the single source, not a Python set kept alongside it.
 
-    Pinning the set means adding one is a conscious edit here and in STATUS.md, rather than
-    the enum quietly diverging from the document the eval fixtures are written against.
+    A member here that §5.2 doesn't name is a finding the engine can emit and no manifest can
+    assert — invisible to the eval harness by construction. Adding one is a spec edit first;
+    this test is what makes that the path of least resistance rather than a habit to keep.
     """
-    recorded = {
-        # favorable counterparts §5.2 omitted despite defining a `favorable` severity
-        "retro_date_receded",
-        "notice_of_cancellation_increased",
-        # neutral: a change is detectable but its direction is not
-        "sublimit_added",
-        "deductible_basis_changed",
-        "endorsement_added",
-        # about the tool, not the policy — `report` groups these separately
-        "field_not_found",
-        "ambiguous_path",
-        "normalizer_version_mismatch",
-    }
     beyond = {t.value for t in FindingType} - {name for name, _ in _spec_rows()}
-    assert beyond == recorded, (
-        "FindingType gained or lost a member the spec doesn't list. If deliberate, update "
-        "this set and the decision record in STATUS.md; spec §5.2 should also grow the row."
+    assert not beyond, (
+        f"FindingType has members spec §5.2 does not list: {sorted(beyond)}. Add the rows "
+        f"to §5.2 with their severities rather than recording the exception here."
     )
+
+
+def test_no_duplicate_rows() -> None:
+    """A type listed twice can carry two severities, and which one `compare/rules.py` picks
+    is then whichever the reader saw first."""
+    names = [name for name, _ in _spec_rows()]
+    duplicates = {n for n in names if names.count(n) > 1}
+    assert not duplicates, f"spec §5.2 lists these more than once: {sorted(duplicates)}"
